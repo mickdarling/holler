@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze (swift)
+    name: codeql
     runs-on: macos-26
     timeout-minutes: 60
     permissions:

@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   fast:
-    name: build · test · lint · deadcode · boundaries · size
+    name: verify
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -35,7 +35,7 @@ jobs:
         run: scripts/verify.sh all
 
   simulators:
-    name: iOS · watchOS · macOS app builds and tests
+    name: simulators
     runs-on: macos-26
     timeout-minutes: 45
     needs: fast
