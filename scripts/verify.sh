@@ -38,7 +38,7 @@ sim() {
     [[ -z "$scheme" || "$scheme" == \#* ]] && continue
     echo "-- $scheme on $destination"
     xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" \
-      CODE_SIGNING_ALLOWED=NO -quiet | (command -v xcbeautify >/dev/null && xcbeautify || cat)
+      CODE_SIGNING_ALLOWED=NO | (command -v xcbeautify >/dev/null && xcbeautify --quiet || cat)
   done < scripts/app-schemes.txt
 }
 

@@ -1,4 +1,4 @@
-public import AVFoundation
+import AVFoundation
 public import HollerCore
 
 /// Plays decoded frames through an AVAudioPlayerNode. One player per session; frames are scheduled in order.
@@ -21,8 +21,9 @@ public actor AVAudioEnginePlayer: AudioPlaying {
         guard let buffer = PCMConversion.buffer(from: samples, format: target) else {
             throw AudioEngineError.bufferAllocationFailed
         }
-        player.scheduleBuffer(buffer, completionHandler: nil)
         if !player.isPlaying { player.play() }
+        // Fire-and-forget on this actor: the async variant resumes only after playout, which would serialize frames.
+        Task { await player.scheduleBuffer(buffer) }
     }
 
     public func stopAll() async {
