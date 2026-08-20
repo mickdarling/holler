@@ -6,10 +6,15 @@ import HollerCoreTestSupport
 struct ConnectionSupervisorTests {
     let policy = BackoffPolicy(initial: .milliseconds(10), multiplier: 2, cap: .seconds(1), jitter: 0)
 
+    func makeSupervisor(_ transport: FakeSignalingTransport,
+                        sleeper: FakeSleeper = FakeSleeper()) -> ConnectionSupervisor {
+        ConnectionSupervisor(transport: transport, sleeper: sleeper, random: FixedRandomUnitSource(0.5), policy: policy)
+    }
+
     @Test("connects on start and goes online when the socket opens")
     func happyPath() async {
         let transport = FakeSignalingTransport()
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: FakeSleeper(), random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport)
         await supervisor.start()
         #expect(await transport.connectCount == 1)
         await supervisor.handle(.socketOpened)
@@ -18,9 +23,11 @@ struct ConnectionSupervisorTests {
 
     @Test("a failing connect schedules a retry with the policy delay")
     func retryAfterFailure() async {
-        let transport = FakeSignalingTransport(connectResults: [.failure(.connectionFailed("refused")), .success(())])
+        let transport = FakeSignalingTransport(
+            connectResults: [.failure(.connectionFailed("refused")), .success(())]
+        )
         let sleeper = FakeSleeper(holdUntilReleased: true)
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: sleeper, random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport, sleeper: sleeper)
         await supervisor.start()
         #expect(await supervisor.currentState == .backingOff(attempt: 1))
         await waitUntil { await sleeper.pendingCount == 1 }
@@ -34,7 +41,7 @@ struct ConnectionSupervisorTests {
     func dropWhileConnected() async {
         let transport = FakeSignalingTransport()
         let sleeper = FakeSleeper(holdUntilReleased: true)
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: sleeper, random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport, sleeper: sleeper)
         await supervisor.start()
         await supervisor.handle(.socketOpened)
         await supervisor.handle(.socketClosed(reason: "wifi off"))
@@ -45,7 +52,7 @@ struct ConnectionSupervisorTests {
     @Test("stop closes the socket and cancels the retry")
     func stop() async {
         let transport = FakeSignalingTransport()
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: FakeSleeper(), random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport)
         await supervisor.start()
         await supervisor.handle(.socketOpened)
         await supervisor.stop()
@@ -56,7 +63,7 @@ struct ConnectionSupervisorTests {
     @Test("health stream publishes transitions in order")
     func healthStream() async {
         let transport = FakeSignalingTransport()
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: FakeSleeper(), random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport)
         var iterator = supervisor.subscribeHealth().makeAsyncIterator()
         await supervisor.start()
         await supervisor.handle(.socketOpened)
@@ -67,7 +74,7 @@ struct ConnectionSupervisorTests {
     @Test("inbound messages are forwarded to subscribers")
     func messageForwarding() async {
         let transport = FakeSignalingTransport()
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: FakeSleeper(), random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport)
         var messages = supervisor.subscribeMessages().makeAsyncIterator()
         await supervisor.start()
         await transport.emit(.message(.ping(nonce: 9)))
@@ -77,7 +84,7 @@ struct ConnectionSupervisorTests {
     @Test("transport events drive the machine")
     func transportEvents() async {
         let transport = FakeSignalingTransport()
-        let supervisor = ConnectionSupervisor(transport: transport, sleeper: FakeSleeper(), random: FixedRandomUnitSource(0.5), policy: policy)
+        let supervisor = makeSupervisor(transport)
         await supervisor.start()
         await transport.emit(.connected)
         await waitUntil { await supervisor.currentState == .connected }

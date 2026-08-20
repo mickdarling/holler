@@ -8,7 +8,11 @@ public final class FrameEmitter: Sendable {
     private let startedAt: ContinuousClock.Instant
     private let sequence = Mutex<UInt32>(0)
 
-    public init(codec: any AudioFrameCodec, continuation: AsyncStream<AudioFrame>.Continuation, startedAt: ContinuousClock.Instant) {
+    public init(
+        codec: any AudioFrameCodec,
+        continuation: AsyncStream<AudioFrame>.Continuation,
+        startedAt: ContinuousClock.Instant
+    ) {
         self.codec = codec
         self.continuation = continuation
         self.startedAt = startedAt

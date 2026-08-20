@@ -1,5 +1,5 @@
-# Dead-code scan. Public API of library targets is consumed in-repo by app targets, so retain_public is off.
-retain_public: false
+# Dead-code scan. Library public API is consumed by the XcodeGen app targets outside this package, so public is retained.
+retain_public: true
 retain_objc_accessible: true
 retain_swift_ui_previews: true
 schemes: []

@@ -1,4 +1,5 @@
-@preconcurrency public import AVFoundation
+@preconcurrency import AVFoundation
+import Synchronization
 
 /// Small, pure helpers between AVAudioPCMBuffer and [Int16]. Kept separate so they are easy to test and reason about.
 enum PCMConversion {
@@ -22,19 +23,20 @@ enum PCMConversion {
     }
 
     /// Resample/convert one input buffer into `target` format.
-    static func convert(_ input: AVAudioPCMBuffer, with converter: AVAudioConverter, to target: AVAudioFormat) -> AVAudioPCMBuffer? {
+    static func convert(
+        _ input: AVAudioPCMBuffer, with converter: AVAudioConverter, to target: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
         let ratio = target.sampleRate / input.format.sampleRate
         let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + 32
         guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
-        var consumed = false
+        let consumed = Mutex(false)
         let status = converter.convert(to: output, error: nil) { _, outStatus in
-            if consumed {
-                outStatus.pointee = .noDataNow
-                return nil
+            let alreadyConsumed = consumed.withLock { value -> Bool in
+                defer { value = true }
+                return value
             }
-            consumed = true
-            outStatus.pointee = .haveData
-            return input
+            outStatus.pointee = alreadyConsumed ? .noDataNow : .haveData
+            return alreadyConsumed ? nil : input
         }
         return status == .error ? nil : output
     }

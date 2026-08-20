@@ -41,7 +41,8 @@ struct ConfigurationTests {
             try ConfigurationLoader(info: [:], store: store, identity: identity).load()
         }
         #expect(throws: ConfigurationError.invalidRelayURL("https://relay.example")) {
-            try ConfigurationLoader(info: [ConfigurationLoader.relayURLKey: "https://relay.example"], store: store, identity: identity).load()
+            try ConfigurationLoader(info: [ConfigurationLoader.relayURLKey: "https://relay.example"],
+                                    store: store, identity: identity).load()
         }
     }
 }

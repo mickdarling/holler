@@ -32,7 +32,8 @@ public struct ConnectionMachine: Sendable, Equatable {
         case (.connecting, .socketOpened), (.backingOff, .socketOpened):
             return (.connected, [.publish(.online)])
         case let (.connecting(attempt), .socketClosed), let (.backingOff(attempt), .socketClosed):
-            return (.backingOff(attempt: attempt), [.publish(.retrying(attempt: attempt)), .scheduleRetry(attempt: attempt)])
+            return (.backingOff(attempt: attempt),
+                    [.publish(.retrying(attempt: attempt)), .scheduleRetry(attempt: attempt)])
         case (.connected, .socketClosed):
             return (.backingOff(attempt: 1), [.publish(.retrying(attempt: 1)), .scheduleRetry(attempt: 1)])
         case let (.backingOff(attempt), .retryTimerFired):

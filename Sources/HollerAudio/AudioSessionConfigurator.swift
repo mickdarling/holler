@@ -9,7 +9,10 @@ public struct AudioSessionConfigurator: Sendable {
     public func configureForPushToTalk() throws {
         let session = AVAudioSession.sharedInstance()
         #if os(iOS)
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
+        try session.setCategory(
+            .playAndRecord, mode: .voiceChat,
+            options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
+        )
         #else
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothA2DP])
         #endif

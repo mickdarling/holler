@@ -1,4 +1,3 @@
-public import Foundation
 public import HollerCore
 public import Observation
 
@@ -41,5 +40,4 @@ public final class TalkViewModel {
 
     public func pressed() { Task { await control.press() } }
     public func released() { Task { await control.release() } }
-    public func clearNotice() { lastNotice = nil }
 }
