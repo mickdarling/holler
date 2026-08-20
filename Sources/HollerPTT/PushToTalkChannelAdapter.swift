@@ -56,38 +56,61 @@ public final class PushToTalkChannelAdapter: NSObject, PTChannelManagerDelegate,
 
     // MARK: PTChannelManagerDelegate (nonisolated; forward to the stream)
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, didJoinChannel channelUUID: UUID, reason: PTChannelJoinReason) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, didJoinChannel channelUUID: UUID,
+        reason: PTChannelJoinReason
+    ) {
         continuation.yield(.joined(channelID(for: channelUUID)))
     }
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, didLeaveChannel channelUUID: UUID, reason: PTChannelLeaveReason) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, didLeaveChannel channelUUID: UUID,
+        reason: PTChannelLeaveReason
+    ) {
         continuation.yield(.left(channelID(for: channelUUID), reason: "\(reason.rawValue)"))
     }
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, channelUUID: UUID, didBeginTransmittingFrom source: PTChannelTransmitRequestSource) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, channelUUID: UUID,
+        didBeginTransmittingFrom source: PTChannelTransmitRequestSource
+    ) {
         continuation.yield(.beginTransmittingRequested(channelID(for: channelUUID)))
     }
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, channelUUID: UUID, didEndTransmittingFrom source: PTChannelTransmitRequestSource) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, channelUUID: UUID,
+        didEndTransmittingFrom source: PTChannelTransmitRequestSource
+    ) {
         continuation.yield(.endTransmittingRequested(channelID(for: channelUUID)))
     }
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, receivedEphemeralPushToken pushToken: Data) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, receivedEphemeralPushToken pushToken: Data
+    ) {
         continuation.yield(.pushTokenUpdated(pushToken))
     }
 
-    public nonisolated func incomingPushResult(channelManager: PTChannelManager, channelUUID: UUID, pushPayload: [String: Any]) -> PTPushResult {
+    public nonisolated func incomingPushResult(
+        channelManager: PTChannelManager, channelUUID: UUID, pushPayload: [String: Any]
+    ) -> PTPushResult {
         guard let speaker = pushPayload["speaker"] as? String else { return .leaveChannel }
         let name = pushPayload["speakerName"] as? String ?? speaker
-        continuation.yield(.incomingSpeaker(channelID(for: channelUUID), speaker: ParticipantID(speaker), displayName: name))
+        let event = PushToTalkEvent.incomingSpeaker(
+            channelID(for: channelUUID), speaker: ParticipantID(speaker), displayName: name
+        )
+        continuation.yield(event)
         return .activeRemoteParticipant(PTParticipant(name: name, image: nil))
     }
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, didActivate audioSession: AVAudioSession) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, didActivate audioSession: AVAudioSession
+    ) {
         continuation.yield(.audioSessionActivated)
     }
 
-    public nonisolated func channelManager(_ channelManager: PTChannelManager, didDeactivate audioSession: AVAudioSession) {
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, didDeactivate audioSession: AVAudioSession
+    ) {
         continuation.yield(.audioSessionDeactivated)
     }
 

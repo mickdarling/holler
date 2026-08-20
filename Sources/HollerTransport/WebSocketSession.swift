@@ -34,7 +34,9 @@ struct URLSessionWebSocketChannel: WebSocketChannel {
     func receiveText() async throws -> String {
         switch try await task.receive() {
         case let .string(text): return text
-        case let .data(data): return String(decoding: data, as: UTF8.self)
+        case let .data(data):
+            guard let text = String(data: data, encoding: .utf8) else { throw URLError(.cannotDecodeRawData) }
+            return text
         @unknown default: throw URLError(.badServerResponse)
         }
     }

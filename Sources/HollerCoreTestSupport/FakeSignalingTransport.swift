@@ -26,6 +26,5 @@ public actor FakeSignalingTransport: SignalingTransport {
 
     /// Push an event as if the socket produced it.
     public func emit(_ event: TransportEvent) { continuation.yield(event) }
-    public func finishEvents() { continuation.finish() }
     public var connectCount: Int { calls.filter { $0 == .connect }.count }
 }

@@ -9,7 +9,10 @@ public struct TalkButton: View {
     public let onRelease: () -> Void
     @GestureState private var isPressed = false
 
-    public init(state: TalkMachine.State, enabled: Bool, onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
+    public init(
+        state: TalkMachine.State, enabled: Bool,
+        onPress: @escaping () -> Void, onRelease: @escaping () -> Void
+    ) {
         self.state = state
         self.enabled = enabled
         self.onPress = onPress

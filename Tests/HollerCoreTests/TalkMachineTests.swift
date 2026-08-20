@@ -3,8 +3,7 @@ import Testing
 
 @Suite("TalkMachine")
 struct TalkMachineTests {
-    typealias S = TalkMachine.State
-    typealias E = TalkMachine.Event
+    typealias State = TalkMachine.State
     let machine = TalkMachine()
     let alice = ParticipantID("alice")
     let bob = ParticipantID("bob")
@@ -69,11 +68,11 @@ struct TalkMachineTests {
     }
 
     @Test("disconnect cleans up every active state", arguments: [
-        (S.transmitting, [TalkMachine.Effect.stopCapture]),
-        (S.receiving(from: ParticipantID("alice")), [.stopPlayback]),
-        (S.requesting, []),
+        (State.transmitting, [TalkMachine.Effect.stopCapture]),
+        (State.receiving(from: ParticipantID("alice")), [.stopPlayback]),
+        (State.requesting, [])
     ])
-    func disconnect(pair: (S, [TalkMachine.Effect])) {
+    func disconnect(pair: (State, [TalkMachine.Effect])) {
         let (state, effects) = machine.reduce(pair.0, .disconnected)
         #expect(state == .idle)
         #expect(effects == pair.1)

@@ -3,9 +3,8 @@ import Testing
 
 @Suite("ConnectionMachine")
 struct ConnectionMachineTests {
-    typealias S = ConnectionMachine.State
-    typealias E = ConnectionMachine.Event
-    typealias F = ConnectionMachine.Effect
+    typealias State = ConnectionMachine.State
+    typealias Event = ConnectionMachine.Event
     let machine = ConnectionMachine()
 
     @Test("start from idle opens socket on attempt 1")
@@ -43,15 +42,16 @@ struct ConnectionMachineTests {
         #expect(effects == [.publish(.connecting(attempt: 5)), .openSocket])
     }
 
-    @Test("stop while connected closes socket", arguments: [S.connected])
-    func stopConnected(state: S) {
+    @Test("stop while connected closes socket", arguments: [State.connected])
+    func stopConnected(state: State) {
         let (next, effects) = machine.reduce(state, .stop)
         #expect(next == .stopped)
         #expect(effects == [.closeSocket, .publish(.stopped)])
     }
 
-    @Test("stop while not connected only publishes", arguments: [S.idle, .connecting(attempt: 1), .backingOff(attempt: 2)])
-    func stopElsewhere(state: S) {
+    @Test("stop while not connected only publishes",
+          arguments: [State.idle, .connecting(attempt: 1), .backingOff(attempt: 2)])
+    func stopElsewhere(state: State) {
         let (next, effects) = machine.reduce(state, .stop)
         #expect(next == .stopped)
         #expect(effects == [.publish(.stopped)])
@@ -64,10 +64,11 @@ struct ConnectionMachineTests {
     }
 
     @Test("irrelevant events are no-ops", arguments: [
-        (S.idle, E.socketOpened), (S.idle, E.retryTimerFired), (S.connected, E.socketOpened),
-        (S.connected, E.retryTimerFired), (S.stopped, E.socketClosed(reason: "late")), (S.connecting(attempt: 1), E.start),
+        (State.idle, Event.socketOpened), (State.idle, Event.retryTimerFired), (State.connected, Event.socketOpened),
+        (State.connected, Event.retryTimerFired), (State.stopped, Event.socketClosed(reason: "late")),
+        (State.connecting(attempt: 1), Event.start)
     ])
-    func noOps(pair: (S, E)) {
+    func noOps(pair: (State, Event)) {
         let (next, effects) = machine.reduce(pair.0, pair.1)
         #expect(next == pair.0)
         #expect(effects.isEmpty)

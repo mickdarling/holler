@@ -24,8 +24,8 @@ tools() {
   xcodegen --version
 }
 
-build()      { echo "== build";      swift build "${SWIFT_FLAGS[@]}"; }
-test_()      { echo "== test";       swift test --parallel "${SWIFT_FLAGS[@]}"; }
+build()      { echo "== build";      swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
+test_()      { echo "== test";       swift test --parallel ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}; }
 lint()       { echo "== lint";       swiftlint lint --strict --quiet; }
 deadcode()   { echo "== deadcode";   periphery scan --quiet --skip-build --index-store-path .build/debug/index/store 2>/dev/null || periphery scan --quiet; }
 boundaries() { echo "== boundaries"; scripts/check-boundaries.sh; }

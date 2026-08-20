@@ -31,6 +31,16 @@ public struct TalkMachine: Sendable, Equatable {
     public init() {}
 
     public func reduce(_ state: State, _ event: Event) -> (State, [Effect]) {
+        switch event {
+        case .pressed, .released, .granted, .denied:
+            return reduceLocal(state, event)
+        case .remoteStarted, .remoteStopped, .disconnected:
+            return reduceRemote(state, event)
+        }
+    }
+
+    /// Events caused by this user's button and the relay's answer to it.
+    private func reduceLocal(_ state: State, _ event: Event) -> (State, [Effect]) {
         switch (state, event) {
         case (.idle, .pressed):
             return (.requesting, [.sendFloorRequest])
@@ -42,12 +52,20 @@ public struct TalkMachine: Sendable, Equatable {
             return (.idle, [.sendFloorRelease])
         case (.transmitting, .released):
             return (.idle, [.stopCapture, .sendFloorRelease])
+        case let (.receiving(current), .pressed):
+            return (.receiving(from: current), [.notifyDenied(heldBy: current)])
+        default:
+            return (state, [])
+        }
+    }
+
+    /// Events caused by other participants or the connection.
+    private func reduceRemote(_ state: State, _ event: Event) -> (State, [Effect]) {
+        switch (state, event) {
         case let (.idle, .remoteStarted(speaker)):
             return (.receiving(from: speaker), [.startPlayback(from: speaker)])
         case let (.receiving(current), .remoteStopped(speaker)) where current == speaker:
             return (.idle, [.stopPlayback])
-        case let (.receiving(current), .pressed):
-            return (.receiving(from: current), [.notifyDenied(heldBy: current)])
         case (.transmitting, .disconnected):
             return (.idle, [.stopCapture])
         case (.receiving, .disconnected):

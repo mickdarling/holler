@@ -10,7 +10,7 @@ struct TaskBagTests {
         bag.add(task)
         #expect(bag.count == 1)
         bag.cancelAll()
-        #expect(bag.count == 0)
+        #expect(bag.isEmpty)
         #expect(task.isCancelled)
     }
 }

@@ -35,10 +35,11 @@ public struct ChannelScreen: View {
         if let name = model.speakerName {
             Text("\(name) is talking").font(.subheadline)
         } else if case let .denied(holder) = model.lastNotice {
-            Text("Channel busy: \(model.roster.first { $0.id == holder }?.displayName ?? holder.rawValue)")
-                .font(.subheadline).foregroundStyle(.orange)
+            let name = model.roster.first { $0.id == holder }?.displayName ?? holder.rawValue
+            Text("Channel busy: \(name)").font(.subheadline).foregroundStyle(.orange)
         } else {
-            Text(model.isTransmitting ? "You are talking" : "Hold to talk").font(.subheadline).foregroundStyle(.secondary)
+            Text(model.isTransmitting ? "You are talking" : "Hold to talk")
+                .font(.subheadline).foregroundStyle(.secondary)
         }
     }
 }

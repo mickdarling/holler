@@ -31,14 +31,16 @@ struct WireMessageTests {
     let alice = Participant(id: ParticipantID("alice"), displayName: "Alice")
 
     @Test("every case round-trips through JSON", arguments: [
-        WireMessage.hello(participant: Participant(id: ParticipantID("a"), displayName: "A"), channel: ChannelID("kitchen")),
+        WireMessage.hello(participant: Participant(id: ParticipantID("a"), displayName: "A"),
+                          channel: ChannelID("kitchen")),
         .welcome(participants: [Participant(id: ParticipantID("a"), displayName: "A")]),
         .participantJoined(participant: Participant(id: ParticipantID("b"), displayName: "B")),
         .participantLeft(id: ParticipantID("b")),
         .floorRequest(from: ParticipantID("a")), .floorGranted(to: ParticipantID("a")),
         .floorDenied(to: ParticipantID("a"), heldBy: ParticipantID("b")), .floorReleased(by: ParticipantID("a")),
-        .audio(from: ParticipantID("a"), frame: AudioFrame(sequence: 7, timestampMilliseconds: 99, payload: Data([1, 2]))),
-        .ping(nonce: 42), .pong(nonce: 42),
+        .audio(from: ParticipantID("a"),
+               frame: AudioFrame(sequence: 7, timestampMilliseconds: 99, payload: Data([1, 2]))),
+        .ping(nonce: 42), .pong(nonce: 42)
     ])
     func roundTrip(message: WireMessage) throws {
         let data = try encoder.encode(message)

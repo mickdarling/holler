@@ -20,6 +20,7 @@ public final class TaskBag: Sendable {
     }
 
     public var count: Int { tasks.withLock { $0.count } }
+    public var isEmpty: Bool { tasks.withLock { $0.isEmpty } }
 
     deinit { cancelAll() }
 }
