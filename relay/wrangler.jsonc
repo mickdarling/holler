@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "holler-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "CHANNEL", "class_name": "ChannelRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChannelRoom"] }],
+  // Non-secret configuration. Secrets (APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY,
+  // APNS_TOPIC) are set with `wrangler secret put` or a local .dev.vars file.
+  "vars": {
+    "APNS_ENABLED": "false"
+  }
+}

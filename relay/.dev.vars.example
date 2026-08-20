@@ -1,0 +1,9 @@
+# Copy to .dev.vars for local development. Never commit real values.
+APNS_ENABLED=false
+APNS_KEY_ID=
+APNS_TEAM_ID=
+APNS_TOPIC=com.example.holler.voip-ptt
+# Multi-line PEM must be quoted; \n escapes are also accepted.
+APNS_PRIVATE_KEY=""
+# Optional. Defaults to api.push.apple.com; use api.sandbox.push.apple.com for development builds.
+APNS_HOST=
