@@ -1,0 +1,114 @@
+# XcodeGen spec. `xcodegen generate` produces Holler.xcodeproj (gitignored). Never hand-edit the project.
+name: Holler
+options:
+  bundleIdPrefix: com.mickdarling
+  deploymentTarget:
+    iOS: "18.0"
+    watchOS: "11.0"
+    macOS: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    # Relay base URL baked into Info.plist (HollerRelayURL). Override per build config or via xcconfig.
+    HOLLER_RELAY_URL: "wss://relay.holler.invalid"
+packages:
+  Holler:
+    path: .
+targets:
+  Holler-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - Apps/Holler-iOS
+      - Apps/Shared
+    dependencies:
+      - package: Holler
+        products: [HollerCore, HollerTransport, HollerAudio, HollerPTT, HollerFeatures]
+    info:
+      path: Apps/Holler-iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Holler
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSMicrophoneUsageDescription: Holler uses the microphone only while you hold the talk button.
+        UIBackgroundModes: [audio, push-to-talk]
+        HollerRelayURL: $(HOLLER_RELAY_URL)
+    entitlements:
+      path: Apps/Holler-iOS/Holler.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.holler
+        TARGETED_DEVICE_FAMILY: "1,2"
+  Holler-watchOS:
+    type: application
+    platform: watchOS
+    sources:
+      - Apps/Holler-watchOS
+      - Apps/Shared
+    dependencies:
+      - package: Holler
+        products: [HollerCore, HollerTransport, HollerAudio, HollerFeatures]
+    info:
+      path: Apps/Holler-watchOS/Info.plist
+      properties:
+        CFBundleDisplayName: Holler
+        WKApplication: true
+        WKWatchOnly: true
+        NSMicrophoneUsageDescription: Holler uses the microphone only while you hold the talk button.
+        UIBackgroundModes: [audio]
+        HollerRelayURL: $(HOLLER_RELAY_URL)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.holler.watch
+  Holler-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/Holler-macOS
+      - Apps/Shared
+    dependencies:
+      - package: Holler
+        products: [HollerCore, HollerTransport, HollerAudio, HollerFeatures]
+    info:
+      path: Apps/Holler-macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Holler
+        NSMicrophoneUsageDescription: Holler uses the microphone only while you hold the talk button.
+        HollerRelayURL: $(HOLLER_RELAY_URL)
+    entitlements:
+      path: Apps/Holler-macOS/Holler.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.holler.mac
+schemes:
+  Holler-iOS:
+    build:
+      targets: { Holler-iOS: all }
+    test:
+      targets:
+        - package: Holler/HollerCoreTests
+        - package: Holler/HollerTransportTests
+        - package: Holler/HollerFeaturesTests
+  Holler-watchOS:
+    build:
+      targets: { Holler-watchOS: all }
+    test:
+      targets:
+        - package: Holler/HollerCoreTests
+        - package: Holler/HollerFeaturesTests
+  Holler-macOS:
+    build:
+      targets: { Holler-macOS: all }
+    test:
+      targets:
+        - package: Holler/HollerCoreTests
+        - package: Holler/HollerTransportTests
+        - package: Holler/HollerFeaturesTests

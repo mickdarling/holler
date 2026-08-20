@@ -1,0 +1,16 @@
+.build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+!Package.swift
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+relay/node_modules/
+relay/.wrangler/
+relay/dist/
+.env
+*.p8
+*.p12
+*.mobileprovision

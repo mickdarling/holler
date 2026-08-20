@@ -1,0 +1,12 @@
+# Dead-code scan. Public API of library targets is consumed in-repo by app targets, so retain_public is off.
+retain_public: false
+retain_objc_accessible: true
+retain_swift_ui_previews: true
+schemes: []
+targets:
+  - HollerCore
+  - HollerCoreTestSupport
+  - HollerTransport
+  - HollerAudio
+  - HollerPTT
+  - HollerFeatures

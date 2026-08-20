@@ -1,0 +1,17 @@
+name: Bug
+description: Something behaves differently from its spec.
+title: "bug: "
+labels: ["type:bug", "status:needs-spec"]
+body:
+  - type: textarea
+    id: expected
+    attributes: { label: Expected (link the spec issue) }
+    validations: { required: true }
+  - type: textarea
+    id: actual
+    attributes: { label: Actual, description: Steps, platform, OS version, logs. }
+    validations: { required: true }
+  - type: textarea
+    id: component
+    attributes: { label: Component mapping }
+    validations: { required: true }

@@ -1,0 +1,15 @@
+# Module graph — the allow-list scripts/check-boundaries.sh enforces.
+# Layers: core -> adapter -> feature -> app. Lower layers never import higher ones.
+# Format is deliberately simple (one module per line) so the checker needs no YAML library.
+layers: [core, adapter, feature, app]
+modules:
+  HollerCore:            { layer: core,    imports: [Foundation, Synchronization] }
+  HollerCoreTestSupport: { layer: core,    imports: [Foundation, Synchronization, HollerCore] }
+  HollerTransport:       { layer: adapter, imports: [Foundation, HollerCore] }
+  HollerAudio:           { layer: adapter, imports: [Foundation, AVFoundation, Synchronization, HollerCore] }
+  HollerPTT:             { layer: adapter, imports: [Foundation, PushToTalk, AVFoundation, Synchronization, HollerCore] }
+  HollerFeatures:        { layer: feature, imports: [Foundation, SwiftUI, Observation, HollerCore] }
+  Shared:                { layer: app,     imports: [Foundation, SwiftUI, Observation, HollerCore, HollerTransport, HollerAudio, HollerFeatures] }
+  Holler-iOS:            { layer: app,     imports: [Foundation, SwiftUI, UIKit, Observation, HollerCore, HollerTransport, HollerAudio, HollerPTT, HollerFeatures] }
+  Holler-watchOS:        { layer: app,     imports: [Foundation, SwiftUI, WatchKit, WatchConnectivity, Observation, HollerCore, HollerTransport, HollerAudio, HollerFeatures] }
+  Holler-macOS:          { layer: app,     imports: [Foundation, SwiftUI, AppKit, Observation, HollerCore, HollerTransport, HollerAudio, HollerFeatures] }
