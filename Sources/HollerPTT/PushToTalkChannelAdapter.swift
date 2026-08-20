@@ -2,7 +2,7 @@
 public import Foundation
 public import HollerCore
 public import PushToTalk
-import AVFoundation
+public import AVFoundation
 import Synchronization
 
 /// Adapter over PTChannelManager. Delegate callbacks are forwarded as PushToTalkEvents; commands are async methods.
