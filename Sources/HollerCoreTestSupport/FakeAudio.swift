@@ -1,5 +1,5 @@
 public import HollerCore
-public import Foundation
+import Foundation
 
 /// Capture fake: yields scripted frames once started, records stop.
 public actor FakeAudioCapturing: AudioCapturing {
