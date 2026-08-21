@@ -32,7 +32,7 @@ boundaries() { echo "== boundaries"; scripts/check-boundaries.sh; }
 size()       { echo "== size";       scripts/check-size.sh; }
 
 sim() { # [scheme] — run one scheme only when given
-  local only="${1:-}" matched=0
+  local only="${1:-}"
   echo "== simulators${only:+ ($only)}"
   if [[ -n "$only" ]] && ! awk -F'|' -v want="$only" '$1 == want { found = 1 } END { exit found ? 0 : 1 }' scripts/app-schemes.txt; then
     echo "unknown scheme '$only' (see scripts/app-schemes.txt)" >&2; return 2
@@ -41,7 +41,6 @@ sim() { # [scheme] — run one scheme only when given
   while IFS='|' read -r scheme platform prefix; do
     [[ -z "$scheme" || "$scheme" == \#* ]] && continue
     [[ -n "$only" && "$scheme" != "$only" ]] && continue
-    matched=1
     destination=$(scripts/resolve-destination.sh "$platform" "$prefix")
     echo "-- $scheme on $destination"
     xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" \

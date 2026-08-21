@@ -4,7 +4,8 @@
 # Honesty rules: a cell is ✅ only if that check ran for that component; skipped/unscanned/failed tooling shows as
 # ⏭ (skipped), — (not applicable), or ❓ (tool failed), never as ✅.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
+LOG=$(mktemp -d "${TMPDIR:-/tmp}/holler-health.XXXXXX")  # per-run evidence; concurrent runs never share logs
 # Respect an existing xcode-select / DEVELOPER_DIR; only fall back to /Applications/Xcode.app when xcodebuild is unusable.
 if ! xcodebuild -version >/dev/null 2>&1 && [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -16,22 +17,28 @@ rows=(); findings=(); red=0; yellow=0; green=0
 mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 
 # Whole-package passes once; per-component attribution by path. Tool failures are recorded, not swallowed.
-swift build --build-tests >/tmp/holler-health-build.log 2>&1; build_all=$?
-periphery scan --quiet >/tmp/holler-health-periphery.log 2>&1; periphery_status=$?
-scripts/check-boundaries.sh >/tmp/holler-health-boundaries.log 2>&1; bounds_all=$?
+swift build --build-tests >"$LOG/build.log" 2>&1; build_all=$?
+periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
+scripts/check-boundaries.sh >"$LOG/boundaries.log" 2>&1; bounds_all=$?
 # Simulator lane per scheme so an early failure leaves later schemes "not run" (❓) rather than "failed".
-declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run
-while IFS='|' read -r scheme platform prefix; do
+declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run / 3 environment failure
+SIM_ENV_RE='no available [A-Za-z]+ simulator matching|command not found|xcrun: error|Unable to find a destination|xcode-select: error'
+sim_env_failure() { grep -qE "$SIM_ENV_RE" "$1"; }
+sim_env_excerpt() { grep -hE "$SIM_ENV_RE" "$LOG"/sim-*.log 2>/dev/null | head -1; }
+while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
   if [[ $NO_SIM -eq 1 ]]; then sim_results+=(2)
-  elif scripts/verify.sh sim "$scheme" >"/tmp/holler-health-sim-$scheme.log" 2>&1; then sim_results+=(0)
+  elif scripts/verify.sh sim "$scheme" >"$LOG/sim-$scheme.log" 2>&1; then sim_results+=(0)
+  elif sim_env_failure "$LOG/sim-$scheme.log"; then sim_results+=(3)
   else sim_results+=(1); fi
 done < scripts/app-schemes.txt
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
-# Shared app code compiles into every scheme: worst result wins (1 > 2 > 0).
-sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo 1; return; }; [[ "${sim_results[$i]}" -eq 2 ]] && r=2; done; echo $r; }
-bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" /tmp/holler-health-boundaries.log || bounds_checker_ok=0
+# Shared app code compiles into every scheme: worst result wins (1 > 3 > 2 > 0).
+sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do case "${sim_results[$i]}" in 1) echo 1; return;; 3) r=3;; 2) [[ $r -eq 0 ]] && r=2;; esac; done; echo $r; }
+# Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
+failed_sim_log() { local i; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
+bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" "$LOG/boundaries.log" || bounds_checker_ok=0
 
 # Prints a finding if an ATS exemption is actually ENABLED for this component: Info.plist/entitlements under its dir
 # with <true/>, or (apps only) its own target block in project.yml setting NSAllowsArbitraryLoads: true.
@@ -76,39 +83,47 @@ check_component() { # name dir
     case $sr in
       0) bcell="✅"; tcell="✅";;
       1) bcell="❌"; tcell="❌"; status="RED"
-         local simlog; simlog=$(ls /tmp/holler-health-sim-"$name".log /tmp/holler-health-sim-Holler-*.log 2>/dev/null | head -1)
+         local simlog; simlog=$(failed_sim_log "$name")
          findings+=("**$name** simulator lane failed: $(grep -E 'error:|failed|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')");;
+      3) bcell="❓"; tcell="❓"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt)");;
       *) bcell="❓"; tcell="❓"; status="YELLOW";;
     esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
   else
-    if grep -qE "^$PWD/$dir/.*error:" /tmp/holler-health-build.log; then bcell="❌"; status="RED"
-      findings+=("**$name** build errors: $(grep -E "^$PWD/$dir/.*error:" /tmp/holler-health-build.log | head -3 | sed "s#$PWD/##" | tr '\n' ' ')")
+    if grep -qE "^$PWD/$dir/.*error:" "$LOG/build.log"; then bcell="❌"; status="RED"
+      findings+=("**$name** build errors: $(grep -E "^$PWD/$dir/.*error:" "$LOG/build.log" | head -3 | sed "s#$PWD/##" | tr '\n' ' ')")
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
     if [[ -d "Tests/${name}Tests" ]]; then
-      if grep -qE "^$PWD/Tests/${name}Tests/.*error:" /tmp/holler-health-build.log; then tcell="❌"; status="RED"
-        findings+=("**$name** test target failed to compile: $(grep -E "^$PWD/Tests/${name}Tests/.*error:" /tmp/holler-health-build.log | head -2 | sed "s#$PWD/##")")
+      if grep -qE "^$PWD/Tests/${name}Tests/.*error:" "$LOG/build.log"; then tcell="❌"; status="RED"
+        findings+=("**$name** test target failed to compile: $(grep -E "^$PWD/Tests/${name}Tests/.*error:" "$LOG/build.log" | head -2 | sed "s#$PWD/##")")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-      elif swift test --skip-build --filter "${name}Tests" >/tmp/holler-health-test-"$name".log 2>&1; then tcell="✅"
+      elif swift test --skip-build --filter "${name}Tests" >"$LOG/test-$name.log" 2>&1; then tcell="✅"
       else tcell="❌"; status="RED"
-        findings+=("**$name** tests failed: $(grep -E '✘|error:' /tmp/holler-health-test-"$name".log | head -3 | tr '\n' ' ')")
+        findings+=("**$name** tests failed: $(grep -E '✘|error:' "$LOG/test-$name.log" | head -3 | tr '\n' ' ')")
       fi
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
     else tcell="⚠️ none"; findings+=("**$name** has no test target (Tests/${name}Tests)"); [[ $status == GREEN ]] && status="YELLOW"
     fi
     if (( periphery_status != 0 )); then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-    elif grep -q "^$PWD/$dir/" /tmp/holler-health-periphery.log; then dcell="⚠️"; [[ $status == GREEN ]] && status="YELLOW"
-      findings+=("**$name** dead code: $(grep "^$PWD/$dir/" /tmp/holler-health-periphery.log | head -3 | sed "s#$PWD/##")")
+    elif grep -q "^$PWD/$dir/" "$LOG/periphery.log"; then dcell="⚠️"; [[ $status == GREEN ]] && status="YELLOW"
+      findings+=("**$name** dead code: $(grep "^$PWD/$dir/" "$LOG/periphery.log" | head -3 | sed "s#$PWD/##")")
     else dcell="✅"; fi
   fi
   # --- lint
   local lint_paths=("$dir"); [[ -d "Tests/${name}Tests" ]] && lint_paths+=("Tests/${name}Tests")
-  swiftlint lint --strict --quiet "${lint_paths[@]}" >/tmp/holler-health-lint.log 2>&1 && lcell="✅" || { lcell="❌"; status="RED"; findings+=("**$name** lint: $(head -3 /tmp/holler-health-lint.log)"); }
+  local lint_log="$LOG/lint-$name.log" lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
+  swiftlint lint --strict --quiet "${lint_paths[@]}" >"$lint_log" 2>&1; lint_status=$?
+  if (( lint_status == 0 )); then lcell="✅"
+  elif grep -qE "$lint_diag_re" "$lint_log"; then lcell="❌"; status="RED"
+    findings+=("**$name** lint: $(grep -E "$lint_diag_re" "$lint_log" | head -3 | sed "s#$PWD/##" | tr '\n' ' ')")
+  else lcell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # tool missing/crashed/config error: nothing was checked
+    findings+=("**$name** lint unverified: swiftlint exited $lint_status without diagnostics: $(head -1 "$lint_log")")
+  fi
   # --- boundaries: production dir and the component's own test dir
   if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-  elif grep -qE "^(${dir}|Tests/${name}Tests)/" /tmp/holler-health-boundaries.log; then bocell="❌"; status="RED"
-    findings+=("**$name** boundaries: $(grep -E "^(${dir}|Tests/${name}Tests)/" /tmp/holler-health-boundaries.log | head -3)")
+  elif grep -qE "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
+    findings+=("**$name** boundaries: $(grep -E "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log" | head -3)")
   else bocell="✅"; fi
   # --- size
   local sz=0 n
@@ -133,7 +148,7 @@ check_component() { # name dir
 for dir in Sources/*/; do name=$(basename "$dir"); check_component "$name" "Sources/$name"; done
 for dir in Apps/*/; do name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
 
-sim_note=""; for i in "${!sim_schemes[@]}"; do case "${sim_results[$i]}" in 0) sim_note+="${sim_schemes[$i]} ✅ ";; 1) sim_note+="${sim_schemes[$i]} ❌ ";; *) sim_note+="${sim_schemes[$i]} ❓ ";; esac; done
+sim_note=""; for i in "${!sim_schemes[@]}"; do case "${sim_results[$i]}" in 0) sim_note+="${sim_schemes[$i]} ✅ ";; 1) sim_note+="${sim_schemes[$i]} ❌ ";; 3) sim_note+="${sim_schemes[$i]} ❓(env) ";; *) sim_note+="${sim_schemes[$i]} ❓ ";; esac; done
 [[ $NO_SIM -eq 1 ]] && sim_note="⏭ skipped (--no-sim): app rows unverified"
 periphery_note=$([[ $periphery_status -eq 0 ]] && echo "✅" || echo "❓ periphery exited $periphery_status (dead-code column unverified)")
 bounds_note=$( (( bounds_checker_ok == 0 )) && echo "❓ checker did not complete" || mark $bounds_all )
@@ -143,7 +158,7 @@ cat <<MD
 
 Commit: \`$commit\`  Tooling: $tooling
 Package build: $(mark $build_all)  Periphery: $periphery_note  Boundaries script: $bounds_note  Simulator lane: $sim_note
-Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not applicable · ❓ not run / tool failed (unverified)
+Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not applicable · ❓ not run / tool or environment failed (unverified)
 
 | Component | Layer | Build | Tests | Lint | Dead code | Boundaries | Size | Risk grep | DI | Status |
 |---|---|---|---|---|---|---|---|---|---|---|
