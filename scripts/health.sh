@@ -51,6 +51,10 @@ done < scripts/app-schemes.txt
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
 # Shared app code compiles into every scheme: worst result wins (1 > 3 > 2 > 0).
 sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do case "${sim_results[$i]}" in 1) echo 1; return;; 3) r=3;; 2) [[ $r -eq 0 ]] && r=2;; esac; done; echo $r; }
+# A failed scheme either did not build or built and then failed its (package) test suites: two different cells.
+sim_build_failed() { grep -qE "Testing cancelled because the build failed|BUILD FAILED|The following build commands failed" "$1"; }
+# App schemes own no test bundle yet: the lane runs the package suites on the simulator, which is not an app test.
+app_has_tests() { [[ -d "Tests/$1Tests" ]]; }
 # Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
 failed_sim_log() { local i; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
 bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" "$LOG/boundaries.log" || bounds_checker_ok=0
@@ -95,11 +99,16 @@ check_component() { # name dir
   # --- build / tests: package targets from SwiftPM; app targets from the simulator lane
   if [[ "$layer" == "app" ]]; then
     local sr; if [[ "$name" == "Shared" ]]; then sr=$(sim_result_shared); else sr=$(sim_result_for "$name"); fi
+    local app_tests="—"; app_has_tests "$name" && app_tests="✅"  # no app-owned tests: the cell is not applicable
     case $sr in
-      0) bcell="✅"; tcell="✅";;
-      1) bcell="❌"; tcell="❌"; status="RED"
+      0) bcell="✅"; tcell="$app_tests";;
+      1) status="RED"
          local simlog; simlog=$(failed_sim_log "$name")
-         findings+=("**$name** simulator lane failed: $(grep -E 'error:|failed|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')");;
+         if sim_build_failed "$simlog"; then bcell="❌"; tcell="—"
+           findings+=("**$name** simulator lane: build failed: $(grep -E '❌|error:' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
+         else bcell="✅"; tcell=$(app_has_tests "$name" && echo "❌" || echo "—")
+           findings+=("**$name** simulator lane: tests failed under this scheme (package suites on the simulator): $(grep -E '✘|error:|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
+         fi;;
       3) bcell="❓"; tcell="❓"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt "$name")");;
       *) bcell="❓"; tcell="❓"; status="YELLOW";;
     esac
