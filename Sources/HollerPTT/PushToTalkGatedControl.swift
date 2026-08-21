@@ -42,7 +42,11 @@ public actor PushToTalkGatedControl: TalkControlling {
             guard generation == lifecycle else { return }
             try await service.join(Channel(id: channelID, name: channelName))
         } catch {
-            if generation == lifecycle { running = false }  // a failed start is a stopped gate
+            if generation == lifecycle {  // a failed start is a stopped gate: finish any stop this start superseded
+                running = false
+                activeSpeaker = nil
+                try? await service.leave(channelID)
+            }
             throw error
         }
         guard generation == lifecycle else { if !running { try? await service.leave(channelID) }; return }
