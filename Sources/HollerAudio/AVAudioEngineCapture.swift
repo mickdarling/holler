@@ -1,4 +1,4 @@
-@preconcurrency public import AVFoundation
+@preconcurrency import AVFoundation
 public import HollerCore
 
 /// Microphone capture via AVAudioEngine: taps the input node, converts to the channel format, emits frames.
