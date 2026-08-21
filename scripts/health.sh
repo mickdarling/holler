@@ -43,13 +43,13 @@ declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1
 SIM_ENV_RE='no available [A-Za-z]+ simulator matching|command not found|xcrun: error|Unable to find a destination|xcode-select: error'
 sim_env_failure() { grep -qE "$SIM_ENV_RE" "$1"; }
 # Environment excerpt for an app row: its own scheme log; for Shared, the first scheme that hit an environment failure.
-sim_env_excerpt() { local i log="$LOG/sim-$1.log"; if [[ "$1" == "Shared" ]]; then for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 3 ]] && { log="$LOG/sim-${sim_schemes[$i]}.log"; break; }; done; fi; grep -hE "$SIM_ENV_RE" "$log" 2>/dev/null | head -1; }
+sim_env_excerpt() { local i log="$LOG/sim-$1.log"; if [[ "$1" == "Shared" ]]; then for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 3 ]] && { log="$LOG/sim-${sim_schemes[$i]}.log"; break; }; done; fi; grep -hE "$SIM_ENV_RE" "$log" 2>/dev/null | head -1 || { echo -n "lane aborted before xcodebuild: "; tail -1 "$log" 2>/dev/null; }; }
 while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
   if [[ $NO_SIM -eq 1 ]]; then sim_results+=(2)
   elif scripts/verify.sh sim "$scheme" >"$LOG/sim-$scheme.log" 2>&1; then sim_results+=(0)
-  elif sim_env_failure "$LOG/sim-$scheme.log"; then sim_results+=(3)
+  elif sim_env_failure "$LOG/sim-$scheme.log" || ! sim_ran_xcodebuild "$LOG/sim-$scheme.log"; then sim_results+=(3)
   else sim_results+=(1); fi
 done < scripts/app-schemes.txt
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
@@ -57,8 +57,8 @@ sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[
 sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do case "${sim_results[$i]}" in 1) echo 1; return;; 3) r=3;; 2) [[ $r -eq 0 ]] && r=2;; esac; done; echo $r; }
 # A failed scheme either did not build or built and then failed its (package) test suites: two different cells.
 sim_build_failed() { grep -qE "Testing cancelled because the build failed|BUILD FAILED|The following build commands failed" "$1"; }
-# App schemes own no test bundle yet: the lane runs the package suites on the simulator, which is not an app test.
-app_has_tests() { [[ -d "Tests/$1Tests" ]]; }
+# Did the lane reach xcodebuild at all? A failure before it (xcodegen, destination resolution) is not a build result.
+sim_ran_xcodebuild() { grep -qE "Test session results|Testing started|BUILD FAILED|TEST FAILED|Test Succeeded|^-- .* on platform=" "$1"; }
 # Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
 failed_sim_log() { local i; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
 bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" "$LOG/boundaries.log" || bounds_checker_ok=0
@@ -103,14 +103,15 @@ check_component() { # name dir
   # --- build / tests: package targets from SwiftPM; app targets from the simulator lane
   if [[ "$layer" == "app" ]]; then
     local sr; if [[ "$name" == "Shared" ]]; then sr=$(sim_result_shared); else sr=$(sim_result_for "$name"); fi
-    local app_tests="—"; app_has_tests "$name" && app_tests="✅"  # no app-owned tests: the cell is not applicable
+    # App targets own no test bundle (project.yml schemes list package suites only), so Tests is not applicable; when
+    # an app test bundle exists this must be derived from its executed-test evidence in the scheme log, not a directory.
     case $sr in
-      0) bcell="✅"; tcell="$app_tests";;
+      0) bcell="✅"; tcell="—";;
       1) status="RED"
          local simlog; simlog=$(failed_sim_log "$name")
          if sim_build_failed "$simlog"; then bcell="❌"; tcell="—"
            findings+=("**$name** simulator lane: build failed: $(grep -E '❌|error:' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
-         else bcell="✅"; tcell=$(app_has_tests "$name" && echo "❌" || echo "—")
+         else bcell="✅"; tcell="—"
            findings+=("**$name** simulator lane: tests failed under this scheme (package suites on the simulator): $(grep -E '✘|error:|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
          fi;;
       3) bcell="❓"; tcell="❓"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt "$name")");;
