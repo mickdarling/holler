@@ -19,7 +19,9 @@ Branch from `main` as `feature/<issue>-<slug>` (or `fix/`, `chore/`). The PR bod
 - Forbidden: force unwrap/try/cast outside tests, `@unchecked Sendable`, empty `catch {}`, string-built URLs/commands, hardcoded secrets, logging audio payloads or tokens, TODO/FIXME without an issue number.
 
 ## Review and merge
-A Claude code review of the diff is the required gate (correctness, security, complexity); automated reviewers (Codex) are optional but every thread they open must be answered and resolved. Record what the review found in the PR. When required checks are green, code-scanning alerts are zero, and all threads are resolved, the author (human or agent) merges — rebase by default, squash only when the branch history is noise — and deletes the branch.
+The local review gate runs before CI sees anything: activate the Dollhouse ensemble `production-code-review-team` and review the full diff against `main` **before** changing an existing branch and **again** after your changes, before commit/PR. Fix every confirmed finding, re-review the resulting diff (the whole affected code, not only the new lines), and record the findings (id, severity, location, finding, status) plus the evidence you executed in the PR. CI confirms; it must not discover.
+
+A Claude code review of the diff is the required gate (correctness, security, complexity); automated reviewers (Codex) are optional but every thread they open must be answered (what changed, which commit) and resolved. Record what the review found in the PR. When required checks are green, code-scanning alerts are zero, and all threads are resolved, the author (human or agent) merges — rebase by default, squash only when the branch history is noise — and deletes the branch.
 
 ## Relay
 `relay/` is TypeScript on Cloudflare Workers. `npm ci && npm test && npm run typecheck` must pass. The wire protocol is in `docs/wire-protocol.md`; changing it changes `Sources/HollerCore/WireMessage.swift` and the relay in the same PR.
