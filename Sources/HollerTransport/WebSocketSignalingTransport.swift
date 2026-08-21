@@ -2,7 +2,8 @@ public import Foundation
 public import HollerCore
 
 /// SignalingTransport over a WebSocket to the relay. One instance, many connect/disconnect cycles
-/// (the ConnectionSupervisor drives those). Emits TransportEvents; never reconnects on its own.
+/// (the ConnectionSupervisor drives those). `connect()` returns (and `.connected` is emitted) only after the
+/// handshake completed; a failed handshake throws and emits nothing. Never reconnects on its own.
 public actor WebSocketSignalingTransport: SignalingTransport {
     private let url: URL
     private let connecting: any WebSocketConnecting
@@ -22,6 +23,12 @@ public actor WebSocketSignalingTransport: SignalingTransport {
         await disconnect()
         let socket = connecting.open(url)
         socket.resume()
+        do {
+            try await socket.waitUntilOpen()
+        } catch {
+            socket.cancel()
+            throw TransportError.connectionFailed("\(error)")
+        }
         channel = socket
         eventContinuation.yield(.connected)
         receiveTask = Task { [weak self] in await self?.receiveLoop(socket) }

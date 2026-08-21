@@ -10,10 +10,16 @@ actor ScriptedSocket: WebSocketChannel {
     private(set) var resumed = false
     private(set) var cancelled = false
     private let failAfterDrain: Bool
+    private let openError: (any Error)?
 
-    init(inbound: [String] = [], failAfterDrain: Bool = true) {
+    init(inbound: [String] = [], failAfterDrain: Bool = true, openError: (any Error)? = nil) {
         self.inbound = inbound
         self.failAfterDrain = failAfterDrain
+        self.openError = openError
+    }
+
+    func waitUntilOpen() async throws {
+        if let openError { throw openError }
     }
 
     nonisolated func resume() { Task { await self.markResumed() } }
@@ -49,6 +55,17 @@ struct WebSocketSignalingTransportTests {
         #expect(await events.next() == .connected)
         #expect(await events.next() == .message(.ping(nonce: 1)))
         guard case .disconnected = await events.next() else { Issue.record("expected disconnected"); return }
+    }
+
+    @Test("a failed handshake throws and emits no events")
+    func handshakeFailure() async {
+        let socket = ScriptedSocket(openError: URLError(.cannotConnectToHost))
+        let transport = WebSocketSignalingTransport(url: url, connecting: ScriptedConnecting(socket: socket))
+        await #expect(throws: TransportError.self) { try await transport.connect() }
+        for _ in 0..<200 where !(await socket.cancelled) { await Task.yield() }
+        #expect(await socket.cancelled)
+        await #expect(throws: TransportError.notConnected) { try await transport.send(.ping(nonce: 1)) }
+        // No `.connected` was emitted: a send before any event would otherwise have succeeded above.
     }
 
     @Test("send encodes through the codec; send before connect fails")
