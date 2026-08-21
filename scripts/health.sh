@@ -69,8 +69,10 @@ shared_build_cell() { local i r log unverified=0; for i in "${!sim_results[@]}";
   (( unverified )) && echo "❓" || echo "✅"; }
 shared_unverified_note() { local i r; for i in "${!sim_results[@]}"; do r="${sim_results[$i]}"; case "$r" in 3) echo "${sim_schemes[$i]} (environment failure)"; return;; 2) echo "${sim_schemes[$i]} (not run)"; return;; esac; done; echo "a scheme with an unattributable build failure"; }
 # Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
-# Shared: prefer a scheme whose failure is a real build failure over one whose package suites failed.
+# Shared: the log that justifies the aggregate — an app/dependency build failure first (that is what makes the cell ❌),
+# then any other build failure, then a scheme whose package suites failed.
 failed_sim_log() { local i log; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi
+  for i in "${!sim_results[@]}"; do log="$LOG/sim-${sim_schemes[$i]}.log"; [[ "${sim_results[$i]}" -eq 1 ]] && sim_build_failed "$log" && [[ "$(sim_build_failure_scope "$log")" == "app" ]] && { echo "$log"; return; }; done
   for i in "${!sim_results[@]}"; do log="$LOG/sim-${sim_schemes[$i]}.log"; [[ "${sim_results[$i]}" -eq 1 ]] && sim_build_failed "$log" && { echo "$log"; return; }; done
   for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
 bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" "$LOG/boundaries.log" || bounds_checker_ok=0
