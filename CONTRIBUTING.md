@@ -18,8 +18,8 @@ Branch from `main` as `feature/<issue>-<slug>` (or `fix/`, `chore/`). The PR bod
 - Tests use Swift Testing and hand-written fakes from `HollerCoreTestSupport`; no sleeps — inject `Sleeper`.
 - Forbidden: force unwrap/try/cast outside tests, `@unchecked Sendable`, empty `catch {}`, string-built URLs/commands, hardcoded secrets, logging audio payloads or tokens, TODO/FIXME without an issue number.
 
-## Review
-A Claude code review of the diff is the required gate (correctness, security, complexity); automated reviewers are optional. Record what the review found in the PR.
+## Review and merge
+A Claude code review of the diff is the required gate (correctness, security, complexity); automated reviewers (Codex) are optional but every thread they open must be answered and resolved. Record what the review found in the PR. When required checks are green, code-scanning alerts are zero, and all threads are resolved, the author (human or agent) merges — rebase by default, squash only when the branch history is noise — and deletes the branch.
 
 ## Relay
 `relay/` is TypeScript on Cloudflare Workers. `npm ci && npm test && npm run typecheck` must pass. The wire protocol is in `docs/wire-protocol.md`; changing it changes `Sources/HollerCore/WireMessage.swift` and the relay in the same PR.

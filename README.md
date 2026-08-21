@@ -47,7 +47,7 @@ The relay URL is baked into each app's Info.plist from the `HOLLER_RELAY_URL` bu
 
 ## Contributing
 
-Specs live in GitHub issues (use the Feature spec template). One issue → one branch → one PR that closes it. `scripts/verify.sh all` must be green locally and in CI; CodeQL must report zero new alerts. See `CONTRIBUTING.md`.
+Specs live in GitHub issues (use the Feature spec template). One issue → one branch → one PR that closes it. `scripts/verify.sh all` must be green locally and in CI; CodeQL must report zero new alerts; review threads must be resolved; then the author merges. See `CONTRIBUTING.md`.
 
 ## License
 
