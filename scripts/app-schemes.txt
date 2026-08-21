@@ -1,4 +1,4 @@
-# scheme|xcodebuild destination  (used by scripts/verify.sh sim)
-Holler-iOS|platform=iOS Simulator,name=iPhone 17
-Holler-watchOS|platform=watchOS Simulator,name=Apple Watch Series 11 (46mm)
-Holler-macOS|platform=macOS
+# scheme|platform|device-name-prefix  (used by scripts/verify.sh sim; destination resolved by scripts/resolve-destination.sh)
+Holler-iOS|iOS|iPhone 17
+Holler-watchOS|watchOS|Apple Watch Series
+Holler-macOS|macOS|

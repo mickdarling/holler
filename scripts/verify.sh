@@ -34,8 +34,9 @@ size()       { echo "== size";       scripts/check-size.sh; }
 sim() {
   echo "== simulators"
   xcodegen generate --quiet
-  while IFS='|' read -r scheme destination; do
+  while IFS='|' read -r scheme platform prefix; do
     [[ -z "$scheme" || "$scheme" == \#* ]] && continue
+    destination=$(scripts/resolve-destination.sh "$platform" "$prefix")
     echo "-- $scheme on $destination"
     xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" \
       CODE_SIGNING_ALLOWED=NO | (command -v xcbeautify >/dev/null && xcbeautify --quiet || cat)
