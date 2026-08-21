@@ -96,6 +96,35 @@ struct PushToTalkGatedControlTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("stop releases the coordinator, leaves, and the gate can be started again")
+    func stopReleasesAndRestarts() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        var innerCalls = inner.calls.subscribe().makeAsyncIterator()
+        await gate.stop()
+        #expect(await innerCalls.next() == "release")  // an in-progress transmission must not outlive the gate
+        #expect(await service.calls.last == .leave(channel))
+        try await gate.start(channelName: "Kitchen")
+        service.emit(.beginTransmittingRequested(channel))
+        #expect(await innerCalls.next() == "press")  // system events still reach the coordinator after a restart
+        #expect(await service.count(.prepare) == 2)
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a rejected setActiveSpeaker is retried on the next emission")
+    func speakerMirrorRetries() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        await service.setSpeakerFailures(1)
+        inner.states.send(.receiving(from: becca.id))
+        await eventually { await service.count(.speaker("b", channel)) == 1 }
+        inner.roster.send([])  // any later emission retries because the rejected name was not cached
+        await eventually { await service.count(.speaker("b", channel)) == 2 }
+        inner.roster.send([becca])
+        await eventually { await service.count(.speaker("Becca", channel)) == 1 }
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("stop leaves the channel and undoes a rejoin that was in flight")
     func stopDuringRejoin() async throws {
         let harness = try await makeGate()

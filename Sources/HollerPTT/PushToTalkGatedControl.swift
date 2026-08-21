@@ -12,7 +12,10 @@ public actor PushToTalkGatedControl: TalkControlling {
     private var receivingFrom: ParticipantID?
     private var activeSpeaker: String?
     private var running = false
-    private var pumps: [Task<Void, Never>] = []
+    /// Consumes `service.events` for the gate's lifetime: the adapter's stream is single-consumer and created once,
+    /// so cancelling it on stop() would leave a restarted gate deaf. Session pumps (states, roster) restart per start().
+    private let eventPump = TaskBag()
+    private let sessionPumps = TaskBag()
 
     public init(inner: any TalkControlling, service: any PushToTalkChannelControlling, channel: ChannelID) {
         self.inner = inner
@@ -29,21 +32,24 @@ public actor PushToTalkGatedControl: TalkControlling {
         guard running else { return }
         try await service.join(Channel(id: channelID, name: channelName))
         guard running else { try? await service.leave(channelID); return }
-        let events = service.events
+        if eventPump.isEmpty {
+            let events = service.events
+            eventPump.add(Task { [weak self] in for await event in events { await self?.handle(event) } })
+        }
         let states = inner.subscribeStates()
         let rosters = inner.subscribeRoster()
-        pumps = [
-            Task { [weak self] in for await event in events { await self?.handle(event) } },
-            Task { [weak self] in for await state in states { await self?.mirror(state) } },
-            Task { [weak self] in for await roster in rosters { await self?.update(roster: roster) } }
-        ]
+        sessionPumps.add(Task { [weak self] in for await state in states { await self?.mirror(state) } })
+        sessionPumps.add(Task { [weak self] in for await roster in rosters { await self?.update(roster: roster) } })
     }
 
-    /// Stop forwarding and leave the system channel. A rejoin in flight when stop() ran is undone (see rejoin()).
+    /// Stop forwarding, release the coordinator (the system end-transmitting callback will no longer be forwarded,
+    /// so an in-progress transmission must not keep capture and the floor), and leave the system channel.
+    /// A join in flight when stop() ran is undone (see start()/rejoin()). start() may be called again afterwards.
     public func stop() async {
         running = false
-        pumps.forEach { $0.cancel() }
-        pumps.removeAll()
+        sessionPumps.cancelAll()
+        await inner.release()
+        activeSpeaker = nil  // leaving the channel clears the system UI
         try? await service.leave(channelID)
     }
 
@@ -87,7 +93,7 @@ public actor PushToTalkGatedControl: TalkControlling {
         guard running else { return }
         let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
         guard name != activeSpeaker else { return }
-        activeSpeaker = name
-        try? await service.setActiveSpeaker(name, on: channelID)
+        // Cache only after the service accepted the update, so a transient rejection is retried on the next emission.
+        if (try? await service.setActiveSpeaker(name, on: channelID)) != nil { activeSpeaker = name }
     }
 }
