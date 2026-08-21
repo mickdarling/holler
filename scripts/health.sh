@@ -44,6 +44,10 @@ SIM_ENV_RE='no available [A-Za-z]+ simulator matching|command not found|xcrun: e
 sim_env_failure() { grep -qE "$SIM_ENV_RE" "$1"; }
 # Environment excerpt for an app row: its own scheme log; for Shared, the first scheme that hit an environment failure.
 sim_env_excerpt() { local i log="$LOG/sim-$1.log"; if [[ "$1" == "Shared" ]]; then for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 3 ]] && { log="$LOG/sim-${sim_schemes[$i]}.log"; break; }; done; fi; grep -hE "$SIM_ENV_RE" "$log" 2>/dev/null | head -1 || { echo -n "lane aborted before xcodebuild: "; tail -1 "$log" 2>/dev/null; }; }
+# A failed scheme either did not build or built and then failed its (package) test suites: two different cells.
+sim_build_failed() { grep -qE "Testing cancelled because the build failed|BUILD FAILED|The following build commands failed" "$1"; }
+# Did the lane reach xcodebuild at all? A failure before it (xcodegen, destination resolution) is not a build result.
+sim_ran_xcodebuild() { grep -qE "Test session results|Testing started|BUILD FAILED|TEST FAILED|Test Succeeded|^-- .* on platform=" "$1"; }
 while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
@@ -55,10 +59,6 @@ done < scripts/app-schemes.txt
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
 # Shared app code compiles into every scheme: worst result wins (1 > 3 > 2 > 0).
 sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do case "${sim_results[$i]}" in 1) echo 1; return;; 3) r=3;; 2) [[ $r -eq 0 ]] && r=2;; esac; done; echo $r; }
-# A failed scheme either did not build or built and then failed its (package) test suites: two different cells.
-sim_build_failed() { grep -qE "Testing cancelled because the build failed|BUILD FAILED|The following build commands failed" "$1"; }
-# Did the lane reach xcodebuild at all? A failure before it (xcodegen, destination resolution) is not a build result.
-sim_ran_xcodebuild() { grep -qE "Test session results|Testing started|BUILD FAILED|TEST FAILED|Test Succeeded|^-- .* on platform=" "$1"; }
 # Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
 failed_sim_log() { local i; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
 bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" "$LOG/boundaries.log" || bounds_checker_ok=0
@@ -114,8 +114,8 @@ check_component() { # name dir
          else bcell="✅"; tcell="—"
            findings+=("**$name** simulator lane: tests failed under this scheme (package suites on the simulator): $(grep -E '✘|error:|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
          fi;;
-      3) bcell="❓"; tcell="❓"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt "$name")");;
-      *) bcell="❓"; tcell="❓"; status="YELLOW";;
+      3) bcell="❓"; tcell="—"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt "$name")");;
+      *) bcell="❓"; tcell="—"; status="YELLOW";;
     esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
   elif ! is_pkg_target "$name"; then
