@@ -45,27 +45,52 @@ struct PushToTalkGatedControlLifecycleTests {
         #expect(await innerCalls.next() == "marker")  // not forwarded: the gate is not running yet
         await service.releaseJoins()
         try await starting.value
-        service.emit(.beginTransmittingRequested(channel))
-        #expect(await innerCalls.next() == "press")
+        service.emit(.endTransmittingRequested(channel))
+        #expect(await innerCalls.next() == "release")  // different event: the buffered begin was not replayed
         withExtendedLifetime(gate) {}
     }
 
-    @Test("stop leaves the channel and undoes a rejoin that was in flight")
+    @Test("a stop issued during a suspended rejoin runs after it and leaves exactly once")
     func stopDuringRejoin() async throws {
         let harness = try await makeGate()
-        let (gate, service) = (harness.gate, harness.service)
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
         await service.setHoldJoins(true)
         service.emit(.left(channel, reason: .unknown))
         await eventually { await service.pendingJoins == 1 }
-        await gate.stop()
-        #expect(await service.count(.leave(channel)) == 1)
+        let stopping = Task { await gate.stop() }
+        await Task.yield()
+        #expect(await service.count(.leave(channel)) == 0)  // the stop is queued behind the rejoin
         await service.releaseJoins()
-        await eventually { await service.count(.leave(channel)) == 2 }
+        await stopping.value
         let calls = await service.calls
-        #expect(calls.suffix(3) == [.join(channel, "Kitchen"), .leave(channel), .leave(channel)])
+        #expect(calls.suffix(2) == [.join(channel, "Kitchen"), .leave(channel)])
+        #expect(await service.count(.leave(channel)) == 1)
         service.emit(.beginTransmittingRequested(channel))  // after stop nothing is forwarded
         await Task.yield()
         #expect(await service.count(.begin(channel)) == 0)
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a rejoin suspended across stop then start does not leave the new session's channel")
+    func rejoinAcrossRestart() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        await service.setHoldJoins(true)
+        service.emit(.left(channel, reason: .unknown))
+        await eventually { await service.pendingJoins == 1 }  // rejoin holds the lifecycle lock, suspended in join
+        let stopping = Task { await gate.stop() }
+        let starting = Task { try await gate.start(channelName: "Kitchen") }
+        await Task.yield()
+        await service.releaseJoins()  // rejoin completes → stop runs (leave) → start runs (prepare + held join)
+        await eventually { await service.pendingJoins == 1 }
+        await service.releaseJoins()
+        await stopping.value
+        try await starting.value
+        let calls = await service.calls
+        #expect(calls.suffix(4) == [.join(channel, "Kitchen"), .leave(channel), .prepare, .join(channel, "Kitchen")])
+        var innerCalls = inner.calls.subscribe().makeAsyncIterator()
+        service.emit(.beginTransmittingRequested(channel))
+        #expect(await innerCalls.next() == "press")  // the new session is live and joined
         withExtendedLifetime(gate) {}
     }
 

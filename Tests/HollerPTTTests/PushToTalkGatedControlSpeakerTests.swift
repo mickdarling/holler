@@ -104,6 +104,25 @@ struct PushToTalkGatedControlSpeakerTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("a speaker result that returns after stop() is not cached: the restart re-sends it")
+    func stopDuringSpeakerCall() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        await service.setHoldSpeakerCalls(true)
+        inner.states.send(.receiving(from: becca.id))
+        await eventually { await service.pendingSpeakerCalls == 1 }
+        let stopping = Task { await gate.stop() }
+        await Task.yield()
+        await service.releaseSpeakerCalls()  // returns after stop invalidated the cache
+        await stopping.value
+        let starting = Task { try await gate.start(channelName: "Kitchen") }
+        await eventually { await service.pendingSpeakerCalls == 1 }  // the restart re-mirrors "b"
+        await service.releaseSpeakerCalls()
+        try await starting.value
+        await eventually { await service.count(.speaker("b", channel)) == 2 }
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("a rejoined channel is told the current speaker again")
     func rejoinRefreshesSpeaker() async throws {
         let harness = try await makeGate()

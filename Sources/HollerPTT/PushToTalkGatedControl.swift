@@ -35,17 +35,20 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// Runs after any stop() in progress; a failed start leaves the gate stopped.
     public func start(channelName: String) async throws {
         await acquireLifecycle()
-        defer { releaseLifecycle() }
-        self.channelName = channelName
         do {
-            try await service.prepare()
-            try await service.join(Channel(id: channelID, name: channelName))
+            try await startLocked(channelName: channelName)
         } catch {
-            activeSpeaker = nil
-            throw error  // still stopped: callbacks that arrived during the failed startup were not forwarded
+            releaseLifecycle()
+            throw error
         }
-        running = true  // only a successful startup accepts system callbacks and button commands
-        if pumps.isEmpty {
+        releaseLifecycle()
+        await refreshActiveSpeaker()  // streams emit only future changes: a restart re-mirrors the current speaker
+    }
+
+    /// Startup proper (under the lifecycle lock): subscribe, prepare, join, then accept callbacks.
+    private func startLocked(channelName: String) async throws {
+        self.channelName = channelName
+        if pumps.isEmpty {  // subscribe before the first startup await so nothing from that window is replayed later
             let events = service.events
             let states = inner.subscribeStates()
             let rosters = inner.subscribeRoster()
@@ -53,12 +56,19 @@ public actor PushToTalkGatedControl: TalkControlling {
             pumps.add(Task { [weak self] in for await state in states { await self?.mirror(state) } })
             pumps.add(Task { [weak self] in for await roster in rosters { await self?.update(roster: roster) } })
         }
-        await refreshActiveSpeaker()  // streams emit only future changes: a restart re-mirrors the current speaker
+        do {
+            try await service.prepare()
+            try await service.join(Channel(id: channelID, name: channelName))
+        } catch {
+            activeSpeaker = nil
+            throw error  // still stopped: callbacks that arrived during the failed startup were dropped, not queued
+        }
+        running = true  // only a successful startup accepts system callbacks and button commands
     }
 
     /// Stop forwarding, release the coordinator (the system end-transmitting callback will no longer be forwarded,
     /// so an in-progress transmission must not keep capture and the floor), and leave the system channel.
-    /// A rejoin in flight is undone (see rejoin()). start() may be called again afterwards; it waits for this.
+    /// Serialized with start() and rejoin(). start() may be called again afterwards; it waits for this.
     public func stop() async {
         await acquireLifecycle()
         defer { releaseLifecycle() }
@@ -102,9 +112,13 @@ public actor PushToTalkGatedControl: TalkControlling {
     }
 
     /// One rejoin per system leave event (no loop of our own: the service either keeps us or drops us again).
+    /// Runs under the lifecycle lock so it cannot straddle a stop()/start(): a stop that was already waiting goes
+    /// after the rejoin and leaves; a stop that came first makes the rejoin a no-op.
     private func rejoin() async {
+        await acquireLifecycle()
+        defer { releaseLifecycle() }
+        guard running else { return }
         try? await service.join(Channel(id: channelID, name: channelName))
-        if !running { try? await service.leave(channelID) }  // stop() ran while the join was suspended
     }
 
     /// Remote speaker → system active participant; cleared when we leave `.receiving`.
