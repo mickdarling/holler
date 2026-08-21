@@ -47,7 +47,10 @@ sim_env_excerpt() { local i log="$LOG/sim-$1.log"; if [[ "$1" == "Shared" ]]; th
 # A failed scheme either did not build or built and then failed its (package) test suites: two different cells.
 sim_build_failed() { grep -qE "Testing cancelled because the build failed|BUILD FAILED|The following build commands failed" "$1"; }
 # Did the lane reach xcodebuild at all? A failure before it (xcodegen, destination resolution) is not a build result.
-sim_ran_xcodebuild() { grep -qE "Test session results|Testing started|BUILD FAILED|TEST FAILED|Test Succeeded|^-- .* on platform=" "$1"; }
+# Only xcodebuild's own output counts (the wrapper prints "-- <scheme> on <destination>" before calling it).
+sim_ran_xcodebuild() { grep -qE "Testing started|Test session results|BUILD FAILED|TEST FAILED|Test Succeeded|Testing cancelled because the build failed|The following build commands failed" "$1"; }
+# Where did a build failure come from? app/dependency sources, a package test target, or unknown (no file diagnostics).
+sim_build_failure_scope() { if grep -qE "❌ .*/(Sources|Apps)/[^ ]*\.swift:[0-9]+:[0-9]+:" "$1"; then echo app; elif grep -qE "❌ .*/Tests/[^ ]*\.swift:[0-9]+:[0-9]+:" "$1"; then echo tests; else echo unknown; fi; }
 while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
@@ -60,7 +63,10 @@ sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[
 # Shared app code compiles into every scheme: worst result wins (1 > 3 > 2 > 0).
 sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do case "${sim_results[$i]}" in 1) echo 1; return;; 3) r=3;; 2) [[ $r -eq 0 ]] && r=2;; esac; done; echo $r; }
 # Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
-failed_sim_log() { local i; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
+# Shared: prefer a scheme whose failure is a real build failure over one whose package suites failed.
+failed_sim_log() { local i log; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi
+  for i in "${!sim_results[@]}"; do log="$LOG/sim-${sim_schemes[$i]}.log"; [[ "${sim_results[$i]}" -eq 1 ]] && sim_build_failed "$log" && { echo "$log"; return; }; done
+  for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo "$LOG/sim-${sim_schemes[$i]}.log"; return; }; done; }
 bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" "$LOG/boundaries.log" || bounds_checker_ok=0
 
 # Prints a finding if an ATS exemption is actually ENABLED for this component: Info.plist/entitlements under its dir
@@ -108,8 +114,15 @@ check_component() { # name dir
     case $sr in
       0) bcell="✅"; tcell="—";;
       1) local simlog; simlog=$(failed_sim_log "$name")
-         if sim_build_failed "$simlog"; then bcell="❌"; tcell="—"; status="RED"
-           findings+=("**$name** simulator lane: build failed: $(grep -E '❌|error:' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
+         if sim_build_failed "$simlog"; then tcell="—"
+           case "$(sim_build_failure_scope "$simlog")" in
+             app) bcell="❌"; status="RED"
+               findings+=("**$name** simulator lane: build failed: $(grep -E '❌|error:' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')");;
+             tests) bcell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # a package test target failed to compile: the lane failed, the app build is unproven
+               findings+=("Simulator lane ($(basename "$simlog" .log | sed 's/^sim-//')): a package test target failed to compile (app build unverified): $(grep -E '❌' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')");;
+             *) bcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+               findings+=("**$name** simulator lane: build failed without file diagnostics (unverified): $(grep -E 'error' "$simlog" 2>/dev/null | head -2 | tr '\n' ' ')");;
+           esac
          else bcell="✅"; tcell="—"  # the app built; the failing suites are package tests run under this scheme —
            # that is a lane failure (counted in Totals), not this app target's status
            findings+=("Simulator lane ($(basename "$simlog" .log | sed 's/^sim-//')): package test suites failed on the simulator (not an app cell): $(grep -E '✘|error:|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
