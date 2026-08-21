@@ -3,7 +3,7 @@
 These are the Dollhouse element files that make up the `production-code-review-team` ensemble required by `CONTRIBUTING.md` (review the diff before you change a branch and again before commit/PR). They are plain Markdown with YAML front matter, exported 2026-08-21.
 
 ## Install (Dollhouse MCP server)
-1. From the repository root, copy each directory into your portfolio: `cp -R docs/agent/dollhouse/production-code-review-team/{ensembles,agents,skills,personas} ~/.dollhouse/portfolio/` (the server also accepts the files through the `import_element` operation).
+1. From the repository root, copy the files into your portfolio without overwriting anything you already have: `cp -Rn docs/agent/dollhouse/production-code-review-team/{ensembles,agents,skills,personas} ~/.dollhouse/portfolio/` (`-n` = no-clobber; the server's `import_element` operation with `overwrite: false` behaves the same). Then compare any same-named element you already had — `diff -r docs/agent/dollhouse/production-code-review-team/skills ~/.dollhouse/portfolio/skills` — and decide per file; the ensemble needs `code-review` ≥ 2.0.0 (Production Correctness section). Dollhouse keeps its own copies under `~/.dollhouse/portfolio/.backups/` when it edits an element, but `cp` does not, so never use `-f` here.
 2. Activate: `activate_element` with `element_type: ensemble`, `element_name: production-code-review-team`. Expect 8/8 elements active (1 agent, 5 skills, 2 personas).
 3. Review the diff; record findings (id, severity, location, finding, status) and the evidence you executed in the PR.
 
