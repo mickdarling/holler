@@ -21,9 +21,14 @@ public actor AVAudioEnginePlayer: AudioPlaying {
         guard let buffer = PCMConversion.buffer(from: samples, format: target) else {
             throw AudioEngineError.bufferAllocationFailed
         }
+        enqueue(buffer)
         if !player.isPlaying { player.play() }
-        // Fire-and-forget on this actor: the async variant resumes only after playout, which would serialize frames.
-        Task { await player.scheduleBuffer(buffer) }
+    }
+
+    /// Synchronous so frames are queued in call order before `play` returns. (The async `scheduleBuffer`
+    /// variant resumes only after playout, which would serialize frames; a detached Task would not preserve order.)
+    private func enqueue(_ buffer: AVAudioPCMBuffer) {
+        player.scheduleBuffer(buffer, completionHandler: nil)
     }
 
     public func stopAll() async {
