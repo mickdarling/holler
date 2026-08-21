@@ -38,14 +38,14 @@ struct LivenessMachineTests {
     @Test("reaching maxMissed declares the connection dead and resets")
     func dead() {
         let (state, effects) = machine.reduce(State(nextNonce: 3, pending: 2, missed: 1), .tick)
-        #expect(state == State())
+        #expect(state == State(nextNonce: 3))
         #expect(effects == [.declareDead])
     }
 
     @Test("reset clears everything")
     func reset() {
         let (state, effects) = machine.reduce(State(nextNonce: 9, pending: 8, missed: 1), .reset)
-        #expect(state == State())
+        #expect(state == State(nextNonce: 9))
         #expect(effects.isEmpty)
     }
 

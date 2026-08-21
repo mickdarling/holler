@@ -151,7 +151,25 @@ struct ConnectionSupervisorLivenessTests {
         await sleeper.releaseAll()
         try? await Task.sleep(for: .milliseconds(20))
         #expect(await transport.calls.filter { if case .send = $0 { return true } else { return false } }.isEmpty)
-        #expect(await supervisor.currentLiveness == LivenessMachine.State())
+        #expect(await supervisor.currentLiveness.pending == nil)
+    }
+
+    @Test("nonces continue across reconnections so a late pong cannot match a new ping")
+    func noncesSurviveReconnect() async {
+        let transport = FakeSignalingTransport()
+        let sleeper = FakeSleeper(holdUntilReleased: true)
+        let supervisor = await connected(transport, sleeper: sleeper)
+        await waitUntil { await sleeper.pendingCount == 1 }
+        await sleeper.releaseAll()
+        await waitUntil { await transport.calls.contains(.send(.ping(nonce: 1))) }
+        await supervisor.handle(.socketClosed(reason: "drop"))
+        await supervisor.handle(.socketOpened)
+        await waitUntil { await sleeper.pendingCount >= 1 }
+        await sleeper.releaseAll()
+        await waitUntil { await transport.calls.contains(.send(.ping(nonce: 2))) }
+        await transport.emit(.message(.pong(nonce: 1)))
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(await supervisor.currentLiveness.pending == 2)
     }
 
     @Test("a stale tick from a previous connection generation is ignored")
