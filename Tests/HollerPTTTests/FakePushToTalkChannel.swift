@@ -14,6 +14,8 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     struct Rejected: Error {}
     private var holdJoins = false
     private var speakerFailures = 0
+    private var holdSpeakerCalls = false
+    private var speakerWaiters: [CheckedContinuation<Void, Never>] = []
     private var joinWaiters: [CheckedContinuation<Void, Never>] = []
 
     init() {
@@ -31,6 +33,7 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     func stopTransmitting(_ channel: ChannelID) async throws { calls.append(.stop(channel)) }
     func setActiveSpeaker(_ name: String?, on channel: ChannelID) async throws {
         calls.append(.speaker(name, channel))
+        if holdSpeakerCalls { await withCheckedContinuation { speakerWaiters.append($0) } }
         if speakerFailures > 0 { speakerFailures -= 1; throw Rejected() }
     }
 
@@ -46,5 +49,13 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
         pending.forEach { $0.resume() }
     }
     var pendingJoins: Int { joinWaiters.count }
+    /// setActiveSpeaker calls suspend until releaseSpeakerCalls() (to script overlapping speaker updates).
+    func setHoldSpeakerCalls(_ hold: Bool) { holdSpeakerCalls = hold }
+    func releaseSpeakerCalls() {
+        let pending = speakerWaiters
+        speakerWaiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
+    var pendingSpeakerCalls: Int { speakerWaiters.count }
     func count(_ call: Call) -> Int { calls.filter { $0 == call }.count }
 }

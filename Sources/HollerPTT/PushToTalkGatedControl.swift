@@ -11,6 +11,8 @@ public actor PushToTalkGatedControl: TalkControlling {
     private var roster: [Participant] = []
     private var receivingFrom: ParticipantID?
     private var activeSpeaker: String?
+    private var speakerUpdateInFlight = false
+    private var speakerRefreshPending = false
     private var running = false
     /// Consumes `service.events` for the gate's lifetime: the adapter's stream is single-consumer and created once,
     /// so cancelling it on stop() would leave a restarted gate deaf. Session pumps (states, roster) restart per start().
@@ -40,6 +42,7 @@ public actor PushToTalkGatedControl: TalkControlling {
         let rosters = inner.subscribeRoster()
         sessionPumps.add(Task { [weak self] in for await state in states { await self?.mirror(state) } })
         sessionPumps.add(Task { [weak self] in for await roster in rosters { await self?.update(roster: roster) } })
+        await refreshActiveSpeaker()  // streams emit only future changes: a restart re-mirrors the current speaker
     }
 
     /// Stop forwarding, release the coordinator (the system end-transmitting callback will no longer be forwarded,
@@ -65,7 +68,10 @@ public actor PushToTalkGatedControl: TalkControlling {
         switch event {
         case .beginTransmittingRequested: await inner.press()
         case .endTransmittingRequested: await inner.release()
-        case let .left(id, reason) where id == channelID && reason.shouldRejoin: await rejoin()
+        case let .joined(id) where id == channelID: await refreshActiveSpeaker()  // a fresh channel shows nobody
+        case let .left(id, reason) where id == channelID:
+            activeSpeaker = nil  // leaving cleared the system UI
+            if reason.shouldRejoin { await rejoin() }
         default: break
         }
     }
@@ -89,11 +95,21 @@ public actor PushToTalkGatedControl: TalkControlling {
         await refreshActiveSpeaker()
     }
 
+    /// One system call in flight at a time, applied in order: a refresh requested during the await is coalesced and
+    /// re-evaluated afterwards, so an older continuation can never overwrite a newer name (actor reentrancy).
     private func refreshActiveSpeaker() async {
         guard running else { return }
-        let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
-        guard name != activeSpeaker else { return }
-        // Cache only after the service accepted the update, so a transient rejection is retried on the next emission.
-        if (try? await service.setActiveSpeaker(name, on: channelID)) != nil { activeSpeaker = name }
+        if speakerUpdateInFlight { speakerRefreshPending = true; return }
+        speakerUpdateInFlight = true
+        defer { speakerUpdateInFlight = false }
+        repeat {
+            speakerRefreshPending = false
+            let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
+            guard name != activeSpeaker else { continue }
+            // Cache only after the service accepted the update, so a transient rejection is retried on the next emission.
+            let accepted = (try? await service.setActiveSpeaker(name, on: channelID)) != nil
+            guard running else { return }
+            if accepted { activeSpeaker = name }
+        } while speakerRefreshPending && running
     }
 }

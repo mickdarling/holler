@@ -5,23 +5,7 @@ import HollerCoreTestSupport
 
 @Suite("PushToTalkGatedControl")
 struct PushToTalkGatedControlTests {
-    let channel = ChannelID("kitchen")
-    let becca = Participant(id: ParticipantID("b"), displayName: "Becca")
-
-    /// Keep the harness (and so the gate) alive for the whole test: the gate's pumps hold it weakly.
-    struct Harness {
-        let gate: PushToTalkGatedControl
-        let service: FakePushToTalkChannel
-        let inner: FakeTalkControl
-    }
-
-    func makeGate() async throws -> Harness {
-        let service = FakePushToTalkChannel()
-        let inner = FakeTalkControl()
-        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
-        try await gate.start(channelName: "Kitchen")
-        return Harness(gate: gate, service: service, inner: inner)
-    }
+    let channel = kitchen
 
     @Test("start prepares and joins; press/release go to the system service, not the coordinator")
     func startAndPresses() async throws {
@@ -65,37 +49,6 @@ struct PushToTalkGatedControlTests {
         withExtendedLifetime(gate) {}
     }
 
-    @Test("remote speaker is mirrored into the system UI by display name and cleared on idle")
-    func mirrorsActiveSpeaker() async throws {
-        let harness = try await makeGate()
-        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
-        inner.roster.send([becca])
-        await eventually { await gate.currentRoster == [becca] }
-        inner.states.send(.receiving(from: becca.id))
-        await eventually { await service.count(.speaker("Becca", channel)) == 1 }
-        inner.states.send(.idle)
-        await eventually { await service.count(.speaker(nil, channel)) == 1 }
-        inner.states.send(.requesting)  // no remote speaker change → no redundant system call
-        inner.states.send(.receiving(from: ParticipantID("stranger")))
-        await eventually { await service.count(.speaker("stranger", channel)) == 1 }
-        #expect(await service.count(.speaker(nil, channel)) == 1)
-        withExtendedLifetime(gate) {}
-    }
-
-    @Test("a roster that arrives after .receiving re-mirrors the speaker by display name")
-    func rosterAfterReceiving() async throws {
-        let harness = try await makeGate()
-        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
-        inner.states.send(.receiving(from: becca.id))
-        await eventually { await service.count(.speaker("b", channel)) == 1 }
-        inner.roster.send([becca])
-        await eventually { await service.count(.speaker("Becca", channel)) == 1 }
-        inner.roster.send([becca, Participant(id: ParticipantID("c"), displayName: "Cass")])  // same name: no call
-        await eventually { await gate.currentRoster.count == 2 }
-        #expect(await service.count(.speaker("Becca", channel)) == 1)
-        withExtendedLifetime(gate) {}
-    }
-
     @Test("stop releases the coordinator, leaves, and the gate can be started again")
     func stopReleasesAndRestarts() async throws {
         let harness = try await makeGate()
@@ -108,20 +61,6 @@ struct PushToTalkGatedControlTests {
         service.emit(.beginTransmittingRequested(channel))
         #expect(await innerCalls.next() == "press")  // system events still reach the coordinator after a restart
         #expect(await service.count(.prepare) == 2)
-        withExtendedLifetime(gate) {}
-    }
-
-    @Test("a rejected setActiveSpeaker is retried on the next emission")
-    func speakerMirrorRetries() async throws {
-        let harness = try await makeGate()
-        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
-        await service.setSpeakerFailures(1)
-        inner.states.send(.receiving(from: becca.id))
-        await eventually { await service.count(.speaker("b", channel)) == 1 }
-        inner.roster.send([])  // any later emission retries because the rejected name was not cached
-        await eventually { await service.count(.speaker("b", channel)) == 2 }
-        inner.roster.send([becca])
-        await eventually { await service.count(.speaker("Becca", channel)) == 1 }
         withExtendedLifetime(gate) {}
     }
 
@@ -162,12 +101,5 @@ struct PushToTalkGatedControlTests {
         inner.calls.send("marker")  // pumps were never started, so the marker is the first thing we see
         #expect(await innerCalls.next() == "marker")
         withExtendedLifetime(gate) {}
-    }
-}
-
-func eventually(attempts: Int = 500, _ condition: () async -> Bool) async {
-    for _ in 0..<attempts where !(await condition()) {
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(2))
     }
 }
