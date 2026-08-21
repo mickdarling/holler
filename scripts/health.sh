@@ -22,6 +22,17 @@ swift build --build-tests >"$LOG/build.log" 2>&1; build_all=$?
 pkg_targets=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys; print("\n".join(t["name"] for t in json.load(sys.stdin)["targets"]))' 2>/dev/null)
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
+# Periphery coverage: it indexes every package target except `exclude_targets` (Periphery 3.x has no include list; an
+# invalid key such as `targets` is ignored with a warning, surfaced in the header). An excluded component is unscanned.
+periphery_excluded=$(python3 - <<'PYX'
+import re, pathlib
+text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
+m = re.search(r"^exclude_targets:\s*\n((?:\s+-\s*.+\n?)+)", text, re.M)
+print("\n".join(re.findall(r"-\s*(\S+)", m.group(1))) if m else "")
+PYX
+)
+periphery_config_warning=$(grep -E "^warning: \.periphery\.yml" "$LOG/periphery.log" | head -1)
+is_periphery_scanned() { ! grep -qx -- "$1" <<<"$periphery_excluded"; }
 scripts/check-boundaries.sh >"$LOG/boundaries.log" 2>&1; bounds_all=$?
 # Simulator lane per scheme so an early failure leaves later schemes "not run" (❓) rather than "failed".
 declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run / 3 environment failure
@@ -116,6 +127,8 @@ check_component() { # name dir
     else tcell="⚠️ none"; findings+=("**$name** has no test target (Tests/${name}Tests)"); [[ $status == GREEN ]] && status="YELLOW"
     fi
     if (( periphery_status != 0 )); then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+    elif ! is_periphery_scanned "$name"; then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+      findings+=("**$name** dead code unverified: target is in .periphery.yml exclude_targets")
     elif grep -q "^$PWD/$dir/" "$LOG/periphery.log"; then dcell="⚠️"; [[ $status == GREEN ]] && status="YELLOW"
       findings+=("**$name** dead code: $(grep "^$PWD/$dir/" "$LOG/periphery.log" | head -3 | sed "s#$PWD/##")")
     else dcell="✅"; fi
@@ -132,6 +145,8 @@ check_component() { # name dir
   fi
   # --- boundaries: production dir and the component's own test dir
   if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+  elif [[ "$layer" == "unknown" ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker skips modules missing from the graph
+    findings+=("**$name** boundaries unverified: not declared in docs/module-graph.yml (imports are not checked)")
   elif grep -qE "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
     findings+=("**$name** boundaries: $(grep -E "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log" | head -3)")
   else bocell="✅"; fi
@@ -160,7 +175,7 @@ for dir in Apps/*/; do name=$(basename "$dir"); check_component "$name" "Apps/$n
 
 sim_note=""; for i in "${!sim_schemes[@]}"; do case "${sim_results[$i]}" in 0) sim_note+="${sim_schemes[$i]} ✅ ";; 1) sim_note+="${sim_schemes[$i]} ❌ ";; 3) sim_note+="${sim_schemes[$i]} ❓(env) ";; *) sim_note+="${sim_schemes[$i]} ❓ ";; esac; done
 [[ $NO_SIM -eq 1 ]] && sim_note="⏭ skipped (--no-sim): app rows unverified"
-periphery_note=$([[ $periphery_status -eq 0 ]] && echo "✅" || echo "❓ periphery exited $periphery_status (dead-code column unverified)")
+periphery_note=$([[ $periphery_status -eq 0 ]] && echo "✅${periphery_config_warning:+ (⚠️ $periphery_config_warning)}" || echo "❓ periphery exited $periphery_status (dead-code column unverified)")
 bounds_note=$( (( bounds_checker_ok == 0 )) && echo "❓ checker did not complete" || mark $bounds_all )
 
 cat <<MD
