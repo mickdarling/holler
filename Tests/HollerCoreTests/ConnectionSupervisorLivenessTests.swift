@@ -72,7 +72,8 @@ struct ConnectionSupervisorLivenessTests {
         await waitUntil { await transport.calls.contains(.send(.ping(nonce: 1))) }
         await supervisor.handle(.socketClosed(reason: "drop"))
         await supervisor.handle(.socketOpened)
-        await waitUntil { await sleeper.pendingCount >= 1 }
+        // The cancelled first watchdog still holds its sleep; wait for the new watchdog's sleep to register too.
+        await waitUntil { await sleeper.pendingCount >= 2 }
         await sleeper.releaseAll()
         await waitUntil { await transport.calls.contains(.send(.ping(nonce: 2))) }
         await transport.emit(.message(.pong(nonce: 1)))
