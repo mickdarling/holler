@@ -7,8 +7,10 @@ struct ConnectionSupervisorTests {
     let policy = BackoffPolicy(initial: .milliseconds(10), multiplier: 2, cap: .seconds(1), jitter: 0)
 
     func makeSupervisor(_ transport: FakeSignalingTransport,
-                        sleeper: FakeSleeper = FakeSleeper()) -> ConnectionSupervisor {
-        ConnectionSupervisor(transport: transport, sleeper: sleeper, random: FixedRandomUnitSource(0.5), policy: policy)
+                        sleeper: FakeSleeper = FakeSleeper(),
+                        liveness: Duration? = nil) -> ConnectionSupervisor {
+        ConnectionSupervisor(transport: transport, sleeper: sleeper, random: FixedRandomUnitSource(0.5),
+                             policy: policy, livenessInterval: liveness)
     }
 
     @Test("connects on start and goes online when the socket opens")
@@ -89,6 +91,67 @@ struct ConnectionSupervisorTests {
         await transport.emit(.connected)
         await waitUntil { await supervisor.currentState == .connected }
         #expect(await supervisor.currentState == .connected)
+    }
+}
+
+@Suite("ConnectionSupervisor liveness")
+struct ConnectionSupervisorLivenessTests {
+    let policy = BackoffPolicy(initial: .milliseconds(10), multiplier: 2, cap: .seconds(1), jitter: 0)
+
+    func connected(_ transport: FakeSignalingTransport, sleeper: FakeSleeper) async -> ConnectionSupervisor {
+        let supervisor = ConnectionSupervisor(transport: transport, sleeper: sleeper,
+                                              random: FixedRandomUnitSource(0.5),
+                                              policy: policy, livenessInterval: .seconds(15))
+        await supervisor.start()
+        await supervisor.handle(.socketOpened)
+        return supervisor
+    }
+
+    @Test("pings on each interval while connected and a pong resets the count")
+    func pingPong() async {
+        let transport = FakeSignalingTransport()
+        let sleeper = FakeSleeper(holdUntilReleased: true)
+        let supervisor = await connected(transport, sleeper: sleeper)
+        await waitUntil { await sleeper.pendingCount == 1 }
+        #expect(await sleeper.requested == [.seconds(15)])
+        await sleeper.releaseAll()
+        await waitUntil { await transport.calls.contains(.send(.ping(nonce: 1))) }
+        await transport.emit(.message(.pong(nonce: 1)))
+        await waitUntil { await supervisor.currentLiveness.pending == nil }
+        #expect(await supervisor.currentLiveness.missed == 0)
+        #expect(await supervisor.currentState == .connected)
+    }
+
+    @Test("two unanswered pings drop the connection into backoff")
+    func deadAfterTwoMisses() async {
+        let transport = FakeSignalingTransport()
+        let sleeper = FakeSleeper(holdUntilReleased: true)
+        let supervisor = await connected(transport, sleeper: sleeper)
+        for _ in 0..<3 {
+            await waitUntil { await sleeper.pendingCount >= 1 }
+            await sleeper.releaseAll()
+            await waitUntil {
+                let pending = await sleeper.pendingCount
+                let state = await supervisor.currentState
+                return pending >= 1 || state != .connected
+            }
+        }
+        await waitUntil { await supervisor.currentState == .backingOff(attempt: 1) }
+        #expect(await supervisor.currentState == .backingOff(attempt: 1))
+        #expect(await transport.calls.contains(.disconnect))
+    }
+
+    @Test("liveness is disabled when the interval is nil")
+    func disabled() async {
+        let transport = FakeSignalingTransport()
+        let sleeper = FakeSleeper(holdUntilReleased: true)
+        let supervisor = ConnectionSupervisor(transport: transport, sleeper: sleeper,
+                                              random: FixedRandomUnitSource(0.5),
+                                              policy: policy, livenessInterval: nil)
+        await supervisor.start()
+        await supervisor.handle(.socketOpened)
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(await sleeper.pendingCount == 0)
     }
 }
 
