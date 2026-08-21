@@ -73,10 +73,17 @@ check_component() { # name dir
   # --- build / tests: package targets from SwiftPM; app targets from the simulator lane
   if [[ "$layer" == "app" ]]; then
     local sr; if [[ "$name" == "Shared" ]]; then sr=$(sim_result_shared); else sr=$(sim_result_for "$name"); fi
-    case $sr in 0) bcell="✅"; tcell="✅";; 1) bcell="❌"; tcell="❌"; status="RED";; *) bcell="❓"; tcell="❓"; status="YELLOW";; esac
+    case $sr in
+      0) bcell="✅"; tcell="✅";;
+      1) bcell="❌"; tcell="❌"; status="RED"
+         local simlog; simlog=$(ls /tmp/holler-health-sim-"$name".log /tmp/holler-health-sim-Holler-*.log 2>/dev/null | head -1)
+         findings+=("**$name** simulator lane failed: $(grep -E 'error:|failed|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')");;
+      *) bcell="❓"; tcell="❓"; status="YELLOW";;
+    esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
   else
     if grep -qE "^$PWD/$dir/.*error:" /tmp/holler-health-build.log; then bcell="❌"; status="RED"
+      findings+=("**$name** build errors: $(grep -E "^$PWD/$dir/.*error:" /tmp/holler-health-build.log | head -3 | sed "s#$PWD/##" | tr '\n' ' ')")
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
     if [[ -d "Tests/${name}Tests" ]]; then
