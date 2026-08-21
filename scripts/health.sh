@@ -18,6 +18,9 @@ mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 
 # Whole-package passes once; per-component attribution by path. Tool failures are recorded, not swallowed.
 swift build --build-tests >"$LOG/build.log" 2>&1; build_all=$?
+# Declared SwiftPM targets: a Sources/<name> directory that is not a target is never compiled, so its row is unverified.
+pkg_targets=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys; print("\n".join(t["name"] for t in json.load(sys.stdin)["targets"]))' 2>/dev/null)
+is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 scripts/check-boundaries.sh >"$LOG/boundaries.log" 2>&1; bounds_all=$?
 # Simulator lane per scheme so an early failure leaves later schemes "not run" (❓) rather than "failed".
@@ -90,6 +93,9 @@ check_component() { # name dir
       *) bcell="❓"; tcell="❓"; status="YELLOW";;
     esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
+  elif ! is_pkg_target "$name"; then
+    bcell="❓"; tcell="❓"; dcell="❓"; status="YELLOW"
+    findings+=("**$name** unverified: Sources/$name is not a target in Package.swift (nothing here is compiled or tested)")
   else
     if grep -qE "^$PWD/$dir/.*error:" "$LOG/build.log"; then bcell="❌"; status="RED"
       findings+=("**$name** build errors: $(grep -E "^$PWD/$dir/.*error:" "$LOG/build.log" | head -3 | sed "s#$PWD/##" | tr '\n' ' ')")
