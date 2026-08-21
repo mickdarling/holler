@@ -83,6 +83,38 @@ struct PushToTalkGatedControlTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("transmit callbacks for other channels are ignored")
+    func otherChannelCallbacksIgnored() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        var innerCalls = inner.calls.subscribe().makeAsyncIterator()
+        service.emit(.beginTransmittingRequested(ChannelID("other")))
+        service.emit(.endTransmittingRequested(ChannelID("other")))
+        service.emit(.beginTransmittingRequested(channel))
+        #expect(await innerCalls.next() == "press")  // only ours arrived
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a stop suspended in release() does not leave the channel a newer start joined")
+    func staleStopDoesNotLeaveNewSession() async throws {
+        let service = FakePushToTalkChannel()
+        let inner = HoldingTalkControl()
+        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
+        try await gate.start(channelName: "Kitchen")
+        await inner.setHoldReleases(true)
+        let stopping = Task { await gate.stop() }
+        await eventually { await inner.pendingReleases == 1 }
+        try await gate.start(channelName: "Kitchen")  // newer lifecycle: prepare + join again
+        await inner.releaseAll()
+        await stopping.value
+        let calls = await service.calls
+        #expect(calls == [.prepare, .join(channel, "Kitchen"), .prepare, .join(channel, "Kitchen")])  // no leave
+        var baseCalls = inner.base.calls.subscribe().makeAsyncIterator()
+        service.emit(.beginTransmittingRequested(channel))
+        #expect(await baseCalls.next() == "press")  // the gate is running
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("stop leaves the channel and undoes a rejoin that was in flight")
     func stopDuringRejoin() async throws {
         let harness = try await makeGate()

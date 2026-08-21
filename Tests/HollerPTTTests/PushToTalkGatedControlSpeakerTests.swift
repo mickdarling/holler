@@ -95,9 +95,10 @@ struct PushToTalkGatedControlSpeakerTests {
         await eventually { await service.pendingSpeakerCalls == 1 }  // "b" in flight
         service.emit(.left(channel, reason: .unknown))
         await eventually { await service.count(.join(channel, "Kitchen")) == 2 }  // rejoined
+        service.emit(.joined(channel))  // refresh requested while the stale call is still in flight
+        await eventually { await gate.currentRoster.isEmpty }  // (let the joined event be processed)
         await service.releaseSpeakerCalls()  // the pre-leave result returns now and must not be cached
-        service.emit(.joined(channel))
-        await eventually { await service.pendingSpeakerCalls == 1 }  // the joined refresh re-sends "b"
+        await eventually { await service.pendingSpeakerCalls == 1 }  // the queued refresh drains and re-sends "b"
         await service.releaseSpeakerCalls()
         await eventually { await service.count(.speaker("b", channel)) == 2 }
         withExtendedLifetime(gate) {}

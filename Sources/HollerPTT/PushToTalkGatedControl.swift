@@ -14,6 +14,9 @@ public actor PushToTalkGatedControl: TalkControlling {
     private var speakerUpdateInFlight = false
     private var speakerRefreshPending = false
     private var running = false
+    /// Bumped by every start()/stop(): a lifecycle call that was suspended across a newer one must not apply its
+    /// post-await effects (an old stop must not leave a newer session's channel).
+    private var lifecycle = 0
     /// Bumped whenever the system channel membership ends (leave, stop): a speaker result from before is discarded.
     private var channelSession = 0
     /// All pumps live for the gate's lifetime: the adapter's event stream is single-consumer and created once (cancelling
@@ -31,16 +34,18 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// A stop() that lands while this is suspended wins: no pumps are started and a completed join is undone.
     public func start(channelName: String) async throws {
         self.channelName = channelName
+        lifecycle += 1
+        let generation = lifecycle
         running = true
         do {
             try await service.prepare()
-            guard running else { return }
+            guard generation == lifecycle else { return }
             try await service.join(Channel(id: channelID, name: channelName))
         } catch {
-            running = false  // a failed start is a stopped gate: late callbacks must not drive the coordinator
+            if generation == lifecycle { running = false }  // a failed start is a stopped gate
             throw error
         }
-        guard running else { try? await service.leave(channelID); return }
+        guard generation == lifecycle else { if !running { try? await service.leave(channelID) }; return }
         if pumps.isEmpty {
             let events = service.events
             let states = inner.subscribeStates()
@@ -56,9 +61,12 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// so an in-progress transmission must not keep capture and the floor), and leave the system channel.
     /// A join in flight when stop() ran is undone (see start()/rejoin()). start() may be called again afterwards.
     public func stop() async {
+        lifecycle += 1
+        let generation = lifecycle
         running = false
         channelSession += 1
         await inner.release()
+        guard generation == lifecycle else { return }  // a newer start() owns the channel now
         activeSpeaker = nil  // leaving the channel clears the system UI
         try? await service.leave(channelID)
     }
@@ -73,8 +81,8 @@ public actor PushToTalkGatedControl: TalkControlling {
     private func handle(_ event: PushToTalkEvent) async {
         guard running else { return }
         switch event {
-        case .beginTransmittingRequested: await inner.press()
-        case .endTransmittingRequested: await inner.release()
+        case let .beginTransmittingRequested(id) where id == channelID: await inner.press()
+        case let .endTransmittingRequested(id) where id == channelID: await inner.release()
         case let .joined(id) where id == channelID: await refreshActiveSpeaker()  // a fresh channel shows nobody
         case let .left(id, reason) where id == channelID:
             channelSession += 1
@@ -117,7 +125,7 @@ public actor PushToTalkGatedControl: TalkControlling {
             // Cache only after the service accepted the update, so a transient rejection is retried on the next emission.
             let session = channelSession
             let accepted = (try? await service.setActiveSpeaker(name, on: channelID)) != nil
-            guard running, session == channelSession else { return }  // stopped or left meanwhile: result is stale
+            guard running, session == channelSession else { continue }  // stale result; drain any queued refresh
             if accepted { activeSpeaker = name }
         } while speakerRefreshPending && running
     }
