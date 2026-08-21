@@ -16,8 +16,19 @@ mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 swift build --build-tests >/tmp/holler-health-build.log 2>&1; build_all=$?
 periphery scan --quiet >/tmp/holler-health-periphery.log 2>&1; periphery_status=$?
 scripts/check-boundaries.sh >/tmp/holler-health-boundaries.log 2>&1; bounds_all=$?
-sim_status=2  # 0 ok, 1 failed, 2 skipped
-if [[ $NO_SIM -eq 0 ]]; then scripts/verify.sh sim >/tmp/holler-health-sim.log 2>&1 && sim_status=0 || sim_status=1; fi
+# Simulator lane per scheme so an early failure leaves later schemes "not run" (❓) rather than "failed".
+declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run
+while IFS='|' read -r scheme platform prefix; do
+  [[ -z "$scheme" || "$scheme" == \#* ]] && continue
+  sim_schemes+=("$scheme")
+  if [[ $NO_SIM -eq 1 ]]; then sim_results+=(2)
+  elif scripts/verify.sh sim "$scheme" >"/tmp/holler-health-sim-$scheme.log" 2>&1; then sim_results+=(0)
+  else sim_results+=(1); fi
+done < scripts/app-schemes.txt
+sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
+# Shared app code compiles into every scheme: worst result wins (1 > 2 > 0).
+sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && { echo 1; return; }; [[ "${sim_results[$i]}" -eq 2 ]] && r=2; done; echo $r; }
+bounds_checker_ok=1; grep -qE "boundaries OK|^(Sources|Tests|Apps)/" /tmp/holler-health-boundaries.log || bounds_checker_ok=0
 
 # Prints a finding if an ATS exemption is actually ENABLED for this component: Info.plist/entitlements under its dir
 # with <true/>, or (apps only) its own target block in project.yml setting NSAllowsArbitraryLoads: true.
@@ -45,14 +56,17 @@ check_component() { # name dir
   local bcell tcell lcell dcell bocell szcell rcell dicell
   # --- build / tests: package targets from SwiftPM; app targets from the simulator lane
   if [[ "$layer" == "app" ]]; then
-    case $sim_status in 0) bcell="✅"; tcell="✅";; 1) bcell="❌"; tcell="❌"; status="RED";; *) bcell="⏭"; tcell="⏭"; status="YELLOW";; esac
+    local sr; if [[ "$name" == "Shared" ]]; then sr=$(sim_result_shared); else sr=$(sim_result_for "$name"); fi
+    case $sr in 0) bcell="✅"; tcell="✅";; 1) bcell="❌"; tcell="❌"; status="RED";; *) bcell="❓"; tcell="❓"; status="YELLOW";; esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
   else
     if grep -qE "^$PWD/$dir/.*error:" /tmp/holler-health-build.log; then bcell="❌"; status="RED"
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
     if [[ -d "Tests/${name}Tests" ]]; then
-      swift test --skip-build --filter "${name}Tests" >/tmp/holler-health-test-"$name".log 2>&1 && tcell="✅" || { tcell="❌"; status="RED"; }
+      if (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+      elif swift test --skip-build --filter "${name}Tests" >/tmp/holler-health-test-"$name".log 2>&1; then tcell="✅"
+      else tcell="❌"; status="RED"; fi
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
     else tcell="⚠️ none"; findings+=("**$name** has no test target (Tests/${name}Tests)"); [[ $status == GREEN ]] && status="YELLOW"
     fi
@@ -62,13 +76,17 @@ check_component() { # name dir
     else dcell="✅"; fi
   fi
   # --- lint
-  swiftlint lint --strict --quiet "$dir" >/tmp/holler-health-lint.log 2>&1 && lcell="✅" || { lcell="❌"; status="RED"; findings+=("**$name** lint: $(head -3 /tmp/holler-health-lint.log)"); }
+  local lint_paths=("$dir"); [[ -d "Tests/${name}Tests" ]] && lint_paths+=("Tests/${name}Tests")
+  swiftlint lint --strict --quiet "${lint_paths[@]}" >/tmp/holler-health-lint.log 2>&1 && lcell="✅" || { lcell="❌"; status="RED"; findings+=("**$name** lint: $(head -3 /tmp/holler-health-lint.log)"); }
   # --- boundaries: production dir and the component's own test dir
-  if grep -qE "^(${dir}|Tests/${name}Tests)/" /tmp/holler-health-boundaries.log; then bocell="❌"; status="RED"
+  if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+  elif grep -qE "^(${dir}|Tests/${name}Tests)/" /tmp/holler-health-boundaries.log; then bocell="❌"; status="RED"
     findings+=("**$name** boundaries: $(grep -E "^(${dir}|Tests/${name}Tests)/" /tmp/holler-health-boundaries.log | head -3)")
   else bocell="✅"; fi
   # --- size
-  local sz=0; while IFS= read -r f; do (( $(wc -l < "$f") > 200 )) && sz=1; done < <(find "$dir" -name '*.swift'); szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
+  local sz=0; while IFS= read -r f; do (( $(wc -l < "$f") > 200 )) && sz=1; done < <(find "$dir" -name '*.swift')
+  if [[ -d "Tests/${name}Tests" ]]; then while IFS= read -r f; do (( $(wc -l < "$f") > 300 )) && sz=1; done < <(find "Tests/${name}Tests" -name '*.swift'); fi
+  szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
   local rhits; rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|catch\s*\{\s*\}|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; ats_enabled "$name" "$dir"; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $rhits"); else rcell="✅"; fi
@@ -82,16 +100,17 @@ check_component() { # name dir
 for dir in Sources/*/; do name=$(basename "$dir"); check_component "$name" "Sources/$name"; done
 for dir in Apps/*/; do name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
 
-case $sim_status in 0) sim_note="✅ all app schemes built and tested";; 1) sim_note="❌ see scripts/verify.sh sim";; *) sim_note="⏭ skipped (--no-sim): app rows unverified";; esac
+sim_note=""; for i in "${!sim_schemes[@]}"; do case "${sim_results[$i]}" in 0) sim_note+="${sim_schemes[$i]} ✅ ";; 1) sim_note+="${sim_schemes[$i]} ❌ ";; *) sim_note+="${sim_schemes[$i]} ❓ ";; esac; done
+[[ $NO_SIM -eq 1 ]] && sim_note="⏭ skipped (--no-sim): app rows unverified"
 periphery_note=$([[ $periphery_status -eq 0 ]] && echo "✅" || echo "❓ periphery exited $periphery_status (dead-code column unverified)")
-bounds_note=$(mark $bounds_all)
+bounds_note=$( (( bounds_checker_ok == 0 )) && echo "❓ checker did not complete" || mark $bounds_all )
 
 cat <<MD
 # Component health — mickdarling/holler — $date_str
 
 Commit: \`$commit\`  Tooling: $tooling
 Package build: $(mark $build_all)  Periphery: $periphery_note  Boundaries script: $bounds_note  Simulator lane: $sim_note
-Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not applicable · ❓ tool failed
+Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not applicable · ❓ not run / tool failed (unverified)
 
 | Component | Layer | Build | Tests | Lint | Dead code | Boundaries | Size | Risk grep | DI | Status |
 |---|---|---|---|---|---|---|---|---|---|---|

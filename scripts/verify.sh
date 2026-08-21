@@ -31,11 +31,13 @@ deadcode()   { echo "== deadcode";   periphery scan --quiet --skip-build --index
 boundaries() { echo "== boundaries"; scripts/check-boundaries.sh; }
 size()       { echo "== size";       scripts/check-size.sh; }
 
-sim() {
-  echo "== simulators"
+sim() { # [scheme] — run one scheme only when given
+  local only="${1:-}"
+  echo "== simulators${only:+ ($only)}"
   xcodegen generate --quiet
   while IFS='|' read -r scheme platform prefix; do
     [[ -z "$scheme" || "$scheme" == \#* ]] && continue
+    [[ -n "$only" && "$scheme" != "$only" ]] && continue
     destination=$(scripts/resolve-destination.sh "$platform" "$prefix")
     echo "-- $scheme on $destination"
     xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" \
@@ -53,7 +55,7 @@ case "$cmd" in
   deadcode) deadcode ;;
   boundaries) boundaries ;;
   size) size ;;
-  sim) sim ;;
+  sim) sim "${2:-}" ;;
   all) all ;;
-  *) echo "usage: scripts/verify.sh {tools|build|test|lint|deadcode|boundaries|size|sim|all}"; exit 2 ;;
+  *) echo "usage: scripts/verify.sh {tools|build|test|lint|deadcode|boundaries|size|sim [scheme]|all}"; exit 2 ;;
 esac
