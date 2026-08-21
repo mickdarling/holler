@@ -67,6 +67,14 @@ struct LivenessMachineTests {
         #expect(effects.isEmpty)
     }
 
+    @Test("Int.max maxMissed does not overflow the window bound")
+    func hugeMaxMissed() {
+        let lenient = LivenessMachine(maxMissed: Int.max)
+        let (state, effects) = lenient.reduce(State(), .tick)
+        #expect(state.outstanding == [1])
+        #expect(effects == [.sendPing(nonce: 1)])
+    }
+
     @Test("maxMissed below 1 is clamped to 1")
     func clamp() {
         let strict = LivenessMachine(maxMissed: 0)

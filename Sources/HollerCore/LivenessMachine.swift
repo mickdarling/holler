@@ -44,7 +44,7 @@ public struct LivenessMachine: Sendable, Equatable {
             }
             let nonce = next.nextNonce
             next.outstanding.append(nonce)
-            if next.outstanding.count > maxMissed + 1 { next.outstanding.removeFirst() }
+            if next.outstanding.count - 1 > maxMissed { next.outstanding.removeFirst() }  // bound without overflow
             next.nextNonce &+= 1
             return (next, [.sendPing(nonce: nonce)])
         case let .pong(nonce):
