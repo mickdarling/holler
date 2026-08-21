@@ -5,7 +5,10 @@
 # ⏭ (skipped), — (not applicable), or ❓ (tool failed), never as ✅.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+# Respect an existing xcode-select / DEVELOPER_DIR; only fall back to /Applications/Xcode.app when xcodebuild is unusable.
+if ! xcodebuild -version >/dev/null 2>&1 && [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 NO_SIM=0; [[ "${1:-}" == "--no-sim" ]] && NO_SIM=1
 date_str=$(date +%F); commit=$(git rev-parse --short HEAD)
 tooling="swift $(swift --version 2>&1 | head -1 | sed -E 's/.*Swift version ([0-9.]+).*/\1/'), swiftlint $(swiftlint version), periphery $(periphery version), xcodegen $(xcodegen --version | awk '{print $2}')"
@@ -64,7 +67,9 @@ check_component() { # name dir
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
     if [[ -d "Tests/${name}Tests" ]]; then
-      if (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+      if grep -qE "^$PWD/Tests/${name}Tests/.*error:" /tmp/holler-health-build.log; then tcell="❌"; status="RED"
+        findings+=("**$name** test target failed to compile: $(grep -E "^$PWD/Tests/${name}Tests/.*error:" /tmp/holler-health-build.log | head -2 | sed "s#$PWD/##")")
+      elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
       elif swift test --skip-build --filter "${name}Tests" >/tmp/holler-health-test-"$name".log 2>&1; then tcell="✅"
       else tcell="❌"; status="RED"; fi
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
@@ -84,8 +89,9 @@ check_component() { # name dir
     findings+=("**$name** boundaries: $(grep -E "^(${dir}|Tests/${name}Tests)/" /tmp/holler-health-boundaries.log | head -3)")
   else bocell="✅"; fi
   # --- size
-  local sz=0; while IFS= read -r f; do (( $(wc -l < "$f") > 200 )) && sz=1; done < <(find "$dir" -name '*.swift')
-  if [[ -d "Tests/${name}Tests" ]]; then while IFS= read -r f; do (( $(wc -l < "$f") > 300 )) && sz=1; done < <(find "Tests/${name}Tests" -name '*.swift'); fi
+  local sz=0 n
+  while IFS= read -r f; do n=$(wc -l < "$f"); (( n > 200 )) && { sz=1; findings+=("**$name** oversized: $f ($n lines > 200)"); }; done < <(find "$dir" -name '*.swift')
+  if [[ -d "Tests/${name}Tests" ]]; then while IFS= read -r f; do n=$(wc -l < "$f"); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "Tests/${name}Tests" -name '*.swift'); fi
   szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
   local rhits; rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|catch\s*\{\s*\}|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; ats_enabled "$name" "$dir"; } | head -5)
