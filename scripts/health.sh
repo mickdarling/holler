@@ -51,6 +51,19 @@ if proj.exists():
 PYX
 }
 
+# Multiline-aware scan for swallowed errors: `catch {` ... `}` with only whitespace between (any line layout).
+empty_catches() { # dir
+  python3 - "$1" <<'PYX'
+import re, sys, pathlib
+for f in pathlib.Path(sys.argv[1]).rglob("*.swift"):
+    if "Tests/" in str(f):
+        continue
+    text = f.read_text()
+    for m in re.finditer(r"catch\b[^{\n]*\{\s*\}", text):
+        print(f"{f}:{text.count(chr(10), 0, m.start()) + 1}: empty catch block")
+PYX
+}
+
 layer_of() { grep -E "^ +$1:" docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
 check_component() { # name dir
@@ -71,7 +84,9 @@ check_component() { # name dir
         findings+=("**$name** test target failed to compile: $(grep -E "^$PWD/Tests/${name}Tests/.*error:" /tmp/holler-health-build.log | head -2 | sed "s#$PWD/##")")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
       elif swift test --skip-build --filter "${name}Tests" >/tmp/holler-health-test-"$name".log 2>&1; then tcell="✅"
-      else tcell="❌"; status="RED"; fi
+      else tcell="❌"; status="RED"
+        findings+=("**$name** tests failed: $(grep -E '✘|error:' /tmp/holler-health-test-"$name".log | head -3 | tr '\n' ' ')")
+      fi
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
     else tcell="⚠️ none"; findings+=("**$name** has no test target (Tests/${name}Tests)"); [[ $status == GREEN ]] && status="YELLOW"
     fi
@@ -94,8 +109,13 @@ check_component() { # name dir
   if [[ -d "Tests/${name}Tests" ]]; then while IFS= read -r f; do n=$(wc -l < "$f"); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "Tests/${name}Tests" -name '*.swift'); fi
   szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
-  local rhits; rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|catch\s*\{\s*\}|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; ats_enabled "$name" "$dir"; } | head -5)
-  if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $rhits"); else rcell="✅"; fi
+  local rhits ats_out ats_status catch_out catch_status
+  ats_out=$(ats_enabled "$name" "$dir" 2>/dev/null); ats_status=$?
+  catch_out=$(empty_catches "$dir" 2>/dev/null); catch_status=$?
+  rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; printf '%s\n' "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
+  if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $rhits")
+  elif (( ats_status != 0 || catch_status != 0 )); then rcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** risk grep unverified: helper exited (ats=$ats_status, catch=$catch_status)")
+  else rcell="✅"; fi
   # --- DI posture: .shared / static var outside adapters and apps
   local dhits; dhits=$(grep -nE '\.shared\b|static var ' -r "$dir" --include='*.swift' 2>/dev/null | head -5)
   if [[ -n "$dhits" && "$layer" != "adapter" && "$layer" != "app" ]]; then dicell="❌"; status="RED"; findings+=("**$name** DI: $dhits"); else dicell="✅"; fi
