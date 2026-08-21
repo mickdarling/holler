@@ -13,6 +13,7 @@ public actor ConnectionSupervisor {
     private var livenessState = LivenessMachine.State()
     private var retryTask: Task<Void, Never>?
     private var livenessTask: Task<Void, Never>?
+    private var livenessGeneration: UInt64 = 0
     private var eventTask: Task<Void, Never>?
     private let healthBroadcaster = Broadcaster<HealthState>()
     private let messageBroadcaster = Broadcaster<WireMessage>(bufferingPolicy: .bufferingNewest(256))
@@ -60,8 +61,11 @@ public actor ConnectionSupervisor {
         if next != .connected, wasConnected { stopLiveness() }
     }
 
-    /// Liveness entry point (also the test seam).
-    public func handleLiveness(_ event: LivenessMachine.Event) async {
+    /// Liveness entry point (also the test seam). Ticks carry the generation of the task that produced them so a
+    /// cancelled watchdog that wakes late cannot act on a newer connection.
+    public func handleLiveness(_ event: LivenessMachine.Event, generation: UInt64? = nil) async {
+        if let generation, generation != livenessGeneration { return }
+        guard state == .connected else { return }
         let (next, effects) = liveness.reduce(livenessState, event)
         livenessState = next
         for effect in effects {
@@ -99,11 +103,13 @@ public actor ConnectionSupervisor {
     private func startLiveness() {
         guard let interval = livenessInterval else { return }
         livenessState = LivenessMachine.State()
+        livenessGeneration &+= 1
+        let generation = livenessGeneration
         livenessTask?.cancel()
         livenessTask = Task { [weak self, sleeper] in
             while !Task.isCancelled {
-                guard (try? await sleeper.sleep(for: interval)) != nil else { return }
-                await self?.handleLiveness(.tick)
+                guard (try? await sleeper.sleep(for: interval)) != nil, !Task.isCancelled else { return }
+                await self?.handleLiveness(.tick, generation: generation)
             }
         }
     }
@@ -111,6 +117,7 @@ public actor ConnectionSupervisor {
     private func stopLiveness() {
         livenessTask?.cancel()
         livenessTask = nil
+        livenessGeneration &+= 1
         livenessState = LivenessMachine.State()
     }
 

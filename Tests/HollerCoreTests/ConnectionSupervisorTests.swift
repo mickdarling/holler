@@ -141,6 +141,28 @@ struct ConnectionSupervisorLivenessTests {
         #expect(await transport.calls.contains(.disconnect))
     }
 
+    @Test("a watchdog woken after stop() does not ping or touch state")
+    func staleTickAfterStop() async {
+        let transport = FakeSignalingTransport()
+        let sleeper = FakeSleeper(holdUntilReleased: true)
+        let supervisor = await connected(transport, sleeper: sleeper)
+        await waitUntil { await sleeper.pendingCount == 1 }
+        await supervisor.stop()
+        await sleeper.releaseAll()
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(await transport.calls.filter { if case .send = $0 { return true } else { return false } }.isEmpty)
+        #expect(await supervisor.currentLiveness == LivenessMachine.State())
+    }
+
+    @Test("a stale tick from a previous connection generation is ignored")
+    func staleGeneration() async {
+        let transport = FakeSignalingTransport()
+        let supervisor = await connected(transport, sleeper: FakeSleeper(holdUntilReleased: true))
+        await supervisor.handleLiveness(.tick, generation: 0)
+        #expect(await supervisor.currentLiveness == LivenessMachine.State())
+        #expect(await transport.calls.filter { if case .send = $0 { return true } else { return false } }.isEmpty)
+    }
+
     @Test("liveness is disabled when the interval is nil")
     func disabled() async {
         let transport = FakeSignalingTransport()
