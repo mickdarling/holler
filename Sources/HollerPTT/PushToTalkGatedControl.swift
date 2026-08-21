@@ -14,10 +14,12 @@ public actor PushToTalkGatedControl: TalkControlling {
     private var speakerUpdateInFlight = false
     private var speakerRefreshPending = false
     private var running = false
-    /// Consumes `service.events` for the gate's lifetime: the adapter's stream is single-consumer and created once,
-    /// so cancelling it on stop() would leave a restarted gate deaf. Session pumps (states, roster) restart per start().
-    private let eventPump = TaskBag()
-    private let sessionPumps = TaskBag()
+    /// Bumped whenever the system channel membership ends (leave, stop): a speaker result from before is discarded.
+    private var channelSession = 0
+    /// All pumps live for the gate's lifetime: the adapter's event stream is single-consumer and created once (cancelling
+    /// it would leave a restarted gate deaf), and the state/roster caches must stay current while stopped so a restart
+    /// mirrors the real speaker. `running` gates the side effects, not the bookkeeping.
+    private let pumps = TaskBag()
 
     public init(inner: any TalkControlling, service: any PushToTalkChannelControlling, channel: ChannelID) {
         self.inner = inner
@@ -30,18 +32,23 @@ public actor PushToTalkGatedControl: TalkControlling {
     public func start(channelName: String) async throws {
         self.channelName = channelName
         running = true
-        try await service.prepare()
-        guard running else { return }
-        try await service.join(Channel(id: channelID, name: channelName))
-        guard running else { try? await service.leave(channelID); return }
-        if eventPump.isEmpty {
-            let events = service.events
-            eventPump.add(Task { [weak self] in for await event in events { await self?.handle(event) } })
+        do {
+            try await service.prepare()
+            guard running else { return }
+            try await service.join(Channel(id: channelID, name: channelName))
+        } catch {
+            running = false  // a failed start is a stopped gate: late callbacks must not drive the coordinator
+            throw error
         }
-        let states = inner.subscribeStates()
-        let rosters = inner.subscribeRoster()
-        sessionPumps.add(Task { [weak self] in for await state in states { await self?.mirror(state) } })
-        sessionPumps.add(Task { [weak self] in for await roster in rosters { await self?.update(roster: roster) } })
+        guard running else { try? await service.leave(channelID); return }
+        if pumps.isEmpty {
+            let events = service.events
+            let states = inner.subscribeStates()
+            let rosters = inner.subscribeRoster()
+            pumps.add(Task { [weak self] in for await event in events { await self?.handle(event) } })
+            pumps.add(Task { [weak self] in for await state in states { await self?.mirror(state) } })
+            pumps.add(Task { [weak self] in for await roster in rosters { await self?.update(roster: roster) } })
+        }
         await refreshActiveSpeaker()  // streams emit only future changes: a restart re-mirrors the current speaker
     }
 
@@ -50,7 +57,7 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// A join in flight when stop() ran is undone (see start()/rejoin()). start() may be called again afterwards.
     public func stop() async {
         running = false
-        sessionPumps.cancelAll()
+        channelSession += 1
         await inner.release()
         activeSpeaker = nil  // leaving the channel clears the system UI
         try? await service.leave(channelID)
@@ -70,7 +77,8 @@ public actor PushToTalkGatedControl: TalkControlling {
         case .endTransmittingRequested: await inner.release()
         case let .joined(id) where id == channelID: await refreshActiveSpeaker()  // a fresh channel shows nobody
         case let .left(id, reason) where id == channelID:
-            activeSpeaker = nil  // leaving cleared the system UI
+            channelSession += 1
+            activeSpeaker = nil  // leaving cleared the system UI; an in-flight speaker result is now stale
             if reason.shouldRejoin { await rejoin() }
         default: break
         }
@@ -107,8 +115,9 @@ public actor PushToTalkGatedControl: TalkControlling {
             let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
             guard name != activeSpeaker else { continue }
             // Cache only after the service accepted the update, so a transient rejection is retried on the next emission.
+            let session = channelSession
             let accepted = (try? await service.setActiveSpeaker(name, on: channelID)) != nil
-            guard running else { return }
+            guard running, session == channelSession else { return }  // stopped or left meanwhile: result is stale
             if accepted { activeSpeaker = name }
         } while speakerRefreshPending && running
     }

@@ -64,6 +64,25 @@ struct PushToTalkGatedControlTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("a failed start leaves the gate stopped: late system callbacks are ignored until a start succeeds")
+    func failedStartIsStopped() async throws {
+        let service = FakePushToTalkChannel()
+        let inner = FakeTalkControl()
+        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
+        try await gate.start(channelName: "Kitchen")
+        await gate.stop()
+        await service.setPrepareFailures(1)
+        await #expect(throws: FakePushToTalkChannel.Rejected.self) { try await gate.start(channelName: "Kitchen") }
+        var innerCalls = inner.calls.subscribe().makeAsyncIterator()
+        service.emit(.beginTransmittingRequested(channel))
+        inner.calls.send("marker")
+        #expect(await innerCalls.next() == "marker")  // the begin callback was not forwarded
+        try await gate.start(channelName: "Kitchen")
+        service.emit(.beginTransmittingRequested(channel))
+        #expect(await innerCalls.next() == "press")
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("stop leaves the channel and undoes a rejoin that was in flight")
     func stopDuringRejoin() async throws {
         let harness = try await makeGate()

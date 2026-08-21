@@ -71,6 +71,38 @@ struct PushToTalkGatedControlSpeakerTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("coordinator changes while stopped are mirrored on restart")
+    func restartMirrorsCurrentSpeaker() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        inner.roster.send([becca])
+        await eventually { await gate.currentRoster == [becca] }
+        await gate.stop()
+        inner.states.send(.receiving(from: becca.id))  // happens while the gate is stopped
+        try await gate.start(channelName: "Kitchen")
+        await eventually { await service.count(.speaker("Becca", channel)) == 1 }
+        let speakers = await service.calls.filter { if case .speaker = $0 { true } else { false } }
+        #expect(speakers == [.speaker("Becca", channel)])  // nothing was sent while stopped
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a speaker result that returns after the channel was left is discarded")
+    func speakerResultAfterLeaveDiscarded() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        await service.setHoldSpeakerCalls(true)
+        inner.states.send(.receiving(from: becca.id))
+        await eventually { await service.pendingSpeakerCalls == 1 }  // "b" in flight
+        service.emit(.left(channel, reason: .unknown))
+        await eventually { await service.count(.join(channel, "Kitchen")) == 2 }  // rejoined
+        await service.releaseSpeakerCalls()  // the pre-leave result returns now and must not be cached
+        service.emit(.joined(channel))
+        await eventually { await service.pendingSpeakerCalls == 1 }  // the joined refresh re-sends "b"
+        await service.releaseSpeakerCalls()
+        await eventually { await service.count(.speaker("b", channel)) == 2 }
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("a rejoined channel is told the current speaker again")
     func rejoinRefreshesSpeaker() async throws {
         let harness = try await makeGate()

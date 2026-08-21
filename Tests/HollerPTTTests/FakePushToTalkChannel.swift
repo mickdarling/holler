@@ -14,6 +14,7 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     struct Rejected: Error {}
     private var holdJoins = false
     private var speakerFailures = 0
+    private var prepareFailures = 0
     private var holdSpeakerCalls = false
     private var speakerWaiters: [CheckedContinuation<Void, Never>] = []
     private var joinWaiters: [CheckedContinuation<Void, Never>] = []
@@ -22,7 +23,10 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
         (events, continuation) = AsyncStream.makeStream(of: PushToTalkEvent.self, bufferingPolicy: .unbounded)
     }
 
-    func prepare() async throws { calls.append(.prepare) }
+    func prepare() async throws {
+        calls.append(.prepare)
+        if prepareFailures > 0 { prepareFailures -= 1; throw Rejected() }
+    }
     func join(_ channel: Channel) async throws {
         calls.append(.join(channel.id, channel.name))
         guard holdJoins else { return }
@@ -41,6 +45,8 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     nonisolated func emit(_ event: PushToTalkEvent) { continuation.yield(event) }
     /// Later join() calls suspend until releaseJoins() (to script a stop() during an in-flight rejoin).
     func setHoldJoins(_ hold: Bool) { holdJoins = hold }
+    /// The next `count` prepare() calls are recorded and then rejected.
+    func setPrepareFailures(_ count: Int) { prepareFailures = count }
     /// The next `count` setActiveSpeaker calls are recorded and then rejected.
     func setSpeakerFailures(_ count: Int) { speakerFailures = count }
     func releaseJoins() {
