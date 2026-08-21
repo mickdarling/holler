@@ -90,6 +90,19 @@ struct ConnectionSupervisorLivenessTests {
         #expect(await transport.calls.filter { if case .send = $0 { return true } else { return false } }.isEmpty)
     }
 
+    @Test("intervals under one second are clamped to one second")
+    func clampInterval() async {
+        let transport = FakeSignalingTransport()
+        let sleeper = FakeSleeper(holdUntilReleased: true)
+        let supervisor = ConnectionSupervisor(transport: transport, sleeper: sleeper,
+                                              random: FixedRandomUnitSource(0.5),
+                                              policy: policy, livenessInterval: .zero)
+        await supervisor.start()
+        await supervisor.handle(.socketOpened)
+        await waitUntil { await sleeper.pendingCount == 1 }
+        #expect(await sleeper.requested == [.seconds(1)])
+    }
+
     @Test("liveness is disabled when the interval is nil")
     func disabled() async {
         let transport = FakeSignalingTransport()
