@@ -26,6 +26,27 @@ struct PushToTalkGatedControlLifecycleTests {
         service.emit(.beginTransmittingRequested(channel))
         inner.calls.send("marker")  // stopped: the begin callback is not forwarded
         #expect(await innerCalls.next() == "marker")
+        await gate.press()  // stopped: button commands do not reach the service either
+        #expect(await service.count(.begin(channel)) == 0)
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("system callbacks that arrive while startup is still pending are not forwarded")
+    func callbacksDuringStartupIgnored() async throws {
+        let service = FakePushToTalkChannel()
+        let inner = FakeTalkControl()
+        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
+        await service.setHoldJoins(true)
+        let starting = Task { try await gate.start(channelName: "Kitchen") }
+        await eventually { await service.pendingJoins == 1 }
+        var innerCalls = inner.calls.subscribe().makeAsyncIterator()
+        service.emit(.beginTransmittingRequested(channel))  // delayed callback from a previous session
+        inner.calls.send("marker")
+        #expect(await innerCalls.next() == "marker")  // not forwarded: the gate is not running yet
+        await service.releaseJoins()
+        try await starting.value
+        service.emit(.beginTransmittingRequested(channel))
+        #expect(await innerCalls.next() == "press")
         withExtendedLifetime(gate) {}
     }
 

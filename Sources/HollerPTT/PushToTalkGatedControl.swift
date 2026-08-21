@@ -37,15 +37,14 @@ public actor PushToTalkGatedControl: TalkControlling {
         await acquireLifecycle()
         defer { releaseLifecycle() }
         self.channelName = channelName
-        running = true
         do {
             try await service.prepare()
             try await service.join(Channel(id: channelID, name: channelName))
         } catch {
-            running = false  // a failed start is a stopped gate: late callbacks must not drive the coordinator
             activeSpeaker = nil
-            throw error
+            throw error  // still stopped: callbacks that arrived during the failed startup were not forwarded
         }
+        running = true  // only a successful startup accepts system callbacks and button commands
         if pumps.isEmpty {
             let events = service.events
             let states = inner.subscribeStates()
@@ -71,18 +70,19 @@ public actor PushToTalkGatedControl: TalkControlling {
     }
 
     private func acquireLifecycle() async {
-        while lifecycleBusy { await withCheckedContinuation { lifecycleWaiters.append($0) } }
-        lifecycleBusy = true
+        if !lifecycleBusy { lifecycleBusy = true; return }
+        await withCheckedContinuation { lifecycleWaiters.append($0) }  // resumed only when ownership is handed over
     }
 
+    /// Ownership passes directly to the first waiter (the flag never clears in between), so a later caller cannot
+    /// slip in ahead of an earlier one.
     private func releaseLifecycle() {
-        lifecycleBusy = false
-        if !lifecycleWaiters.isEmpty { lifecycleWaiters.removeFirst().resume() }
+        if lifecycleWaiters.isEmpty { lifecycleBusy = false } else { lifecycleWaiters.removeFirst().resume() }
     }
 
     public var currentRoster: [Participant] { roster }
-    public func press() async { try? await service.requestBeginTransmitting(channelID) }
-    public func release() async { try? await service.stopTransmitting(channelID) }
+    public func press() async { if running { try? await service.requestBeginTransmitting(channelID) } }
+    public func release() async { if running { try? await service.stopTransmitting(channelID) } }
     public nonisolated func subscribeStates() -> AsyncStream<TalkMachine.State> { inner.subscribeStates() }
     public nonisolated func subscribeNotices() -> AsyncStream<TalkNotice> { inner.subscribeNotices() }
     public nonisolated func subscribeRoster() -> AsyncStream<[Participant]> { inner.subscribeRoster() }
