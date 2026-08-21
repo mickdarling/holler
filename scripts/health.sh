@@ -6,9 +6,13 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 LOG=$(mktemp -d "${TMPDIR:-/tmp}/holler-health.XXXXXX")  # per-run evidence; concurrent runs never share logs
-# Respect an existing xcode-select / DEVELOPER_DIR; only fall back to /Applications/Xcode.app when xcodebuild is unusable.
-if ! xcodebuild -version >/dev/null 2>&1 && [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+# Same local fallback as scripts/verify.sh: when xcode-select points at CommandLineTools, the Swift Testing frameworks
+# live in Xcode, so select it and pass the framework search paths to swift build/test. CI selects Xcode explicitly.
+SWIFT_FLAGS=()
+if ! xcodebuild -version >/dev/null 2>&1 && [[ -d /Applications/Xcode.app ]]; then
+  XCODE_FW=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks
+  SWIFT_FLAGS=(-Xswiftc "-F$XCODE_FW" -Xlinker "-F$XCODE_FW" -Xlinker -rpath -Xlinker "$XCODE_FW")
+  export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 fi
 NO_SIM=0; [[ "${1:-}" == "--no-sim" ]] && NO_SIM=1
 date_str=$(date +%F); commit=$(git rev-parse --short HEAD)
@@ -17,7 +21,7 @@ rows=(); findings=(); red=0; yellow=0; green=0
 mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 
 # Whole-package passes once; per-component attribution by path. Tool failures are recorded, not swallowed.
-swift build --build-tests >"$LOG/build.log" 2>&1; build_all=$?
+swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log" 2>&1; build_all=$?
 # Declared SwiftPM targets: a Sources/<name> directory that is not a target is never compiled, so its row is unverified.
 pkg_targets=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys; print("\n".join(t["name"] for t in json.load(sys.stdin)["targets"]))' 2>/dev/null)
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
@@ -125,7 +129,7 @@ check_component() { # name dir
       if grep -qE "^$PWD/Tests/${name}Tests/.*error:" "$LOG/build.log"; then tcell="❌"; status="RED"
         findings+=("**$name** test target failed to compile: $(grep -E "^$PWD/Tests/${name}Tests/.*error:" "$LOG/build.log" | head -2 | sed "s#$PWD/##")")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-      elif swift test --skip-build --filter "${name}Tests" >"$LOG/test-$name.log" 2>&1; then
+      elif swift test --skip-build --filter "${name}Tests" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$name.log" 2>&1; then
         # Exit 0 with zero executed tests (target missing from Package.swift, filter mismatch) is not a pass.
         if grep -qE "Test run with [1-9][0-9]* tests?" "$LOG/test-$name.log"; then tcell="✅"
         else tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** tests unverified: swift test exited 0 but executed no tests (filter ${name}Tests)"); fi
