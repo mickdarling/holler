@@ -11,15 +11,26 @@ actor ScriptedSocket: WebSocketChannel {
     private(set) var cancelled = false
     private let failAfterDrain: Bool
     private let openError: (any Error)?
+    private let holdOpen: Bool
+    private var openWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(inbound: [String] = [], failAfterDrain: Bool = true, openError: (any Error)? = nil) {
+    init(inbound: [String] = [], failAfterDrain: Bool = true, openError: (any Error)? = nil, holdOpen: Bool = false) {
         self.inbound = inbound
         self.failAfterDrain = failAfterDrain
         self.openError = openError
+        self.holdOpen = holdOpen
     }
 
     func waitUntilOpen() async throws {
+        if holdOpen { await withCheckedContinuation { openWaiters.append($0) } }
         if let openError { throw openError }
+    }
+
+    /// Complete a held handshake.
+    func releaseOpen() {
+        let waiters = openWaiters
+        openWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 
     nonisolated func resume() { Task { await self.markResumed() } }
@@ -66,6 +77,20 @@ struct WebSocketSignalingTransportTests {
         #expect(await socket.cancelled)
         await #expect(throws: TransportError.notConnected) { try await transport.send(.ping(nonce: 1)) }
         // No `.connected` was emitted: a send before any event would otherwise have succeeded above.
+    }
+
+    @Test("disconnect during the handshake cancels the socket and connect throws without emitting")
+    func disconnectDuringHandshake() async throws {
+        let socket = ScriptedSocket(failAfterDrain: false, holdOpen: true)
+        let transport = WebSocketSignalingTransport(url: url, connecting: ScriptedConnecting(socket: socket))
+        let connectTask = Task { try await transport.connect() }
+        for _ in 0..<200 where !(await socket.resumed) { await Task.yield() }
+        await transport.disconnect()
+        await socket.releaseOpen()
+        await #expect(throws: TransportError.self) { try await connectTask.value }
+        for _ in 0..<200 where !(await socket.cancelled) { await Task.yield() }
+        #expect(await socket.cancelled)
+        await #expect(throws: TransportError.notConnected) { try await transport.send(.ping(nonce: 1)) }
     }
 
     @Test("send encodes through the codec; send before connect fails")

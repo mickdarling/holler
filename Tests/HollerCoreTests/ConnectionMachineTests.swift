@@ -42,15 +42,14 @@ struct ConnectionMachineTests {
         #expect(effects == [.publish(.connecting(attempt: 5)), .openSocket])
     }
 
-    @Test("stop while connected closes socket", arguments: [State.connected])
+    @Test("stop while connected or connecting closes the socket", arguments: [State.connected, .connecting(attempt: 2)])
     func stopConnected(state: State) {
         let (next, effects) = machine.reduce(state, .stop)
         #expect(next == .stopped)
         #expect(effects == [.closeSocket, .publish(.stopped)])
     }
 
-    @Test("stop while not connected only publishes",
-          arguments: [State.idle, .connecting(attempt: 1), .backingOff(attempt: 2)])
+    @Test("stop while idle or backing off only publishes", arguments: [State.idle, .backingOff(attempt: 2)])
     func stopElsewhere(state: State) {
         let (next, effects) = machine.reduce(state, .stop)
         #expect(next == .stopped)
