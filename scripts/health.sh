@@ -24,7 +24,8 @@ scripts/check-boundaries.sh >"$LOG/boundaries.log" 2>&1; bounds_all=$?
 declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run / 3 environment failure
 SIM_ENV_RE='no available [A-Za-z]+ simulator matching|command not found|xcrun: error|Unable to find a destination|xcode-select: error'
 sim_env_failure() { grep -qE "$SIM_ENV_RE" "$1"; }
-sim_env_excerpt() { grep -hE "$SIM_ENV_RE" "$LOG"/sim-*.log 2>/dev/null | head -1; }
+# Environment excerpt for an app row: its own scheme log; for Shared, the first scheme that hit an environment failure.
+sim_env_excerpt() { local i log="$LOG/sim-$1.log"; if [[ "$1" == "Shared" ]]; then for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 3 ]] && { log="$LOG/sim-${sim_schemes[$i]}.log"; break; }; done; fi; grep -hE "$SIM_ENV_RE" "$log" 2>/dev/null | head -1; }
 while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
@@ -66,7 +67,7 @@ for f in pathlib.Path(sys.argv[1]).rglob("*.swift"):
     if "Tests/" in str(f):
         continue
     text = f.read_text()
-    for m in re.finditer(r"catch\b[^{\n]*\{\s*\}", text):
+    for m in re.finditer(r"catch\b[^{]*\{\s*\}", text):
         print(f"{f}:{text.count(chr(10), 0, m.start()) + 1}: empty catch block")
 PYX
 }
@@ -85,7 +86,7 @@ check_component() { # name dir
       1) bcell="❌"; tcell="❌"; status="RED"
          local simlog; simlog=$(failed_sim_log "$name")
          findings+=("**$name** simulator lane failed: $(grep -E 'error:|failed|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')");;
-      3) bcell="❓"; tcell="❓"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt)");;
+      3) bcell="❓"; tcell="❓"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt "$name")");;
       *) bcell="❓"; tcell="❓"; status="YELLOW";;
     esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
@@ -98,7 +99,10 @@ check_component() { # name dir
       if grep -qE "^$PWD/Tests/${name}Tests/.*error:" "$LOG/build.log"; then tcell="❌"; status="RED"
         findings+=("**$name** test target failed to compile: $(grep -E "^$PWD/Tests/${name}Tests/.*error:" "$LOG/build.log" | head -2 | sed "s#$PWD/##")")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-      elif swift test --skip-build --filter "${name}Tests" >"$LOG/test-$name.log" 2>&1; then tcell="✅"
+      elif swift test --skip-build --filter "${name}Tests" >"$LOG/test-$name.log" 2>&1; then
+        # Exit 0 with zero executed tests (target missing from Package.swift, filter mismatch) is not a pass.
+        if grep -qE "Test run with [1-9][0-9]* tests?" "$LOG/test-$name.log"; then tcell="✅"
+        else tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** tests unverified: swift test exited 0 but executed no tests (filter ${name}Tests)"); fi
       else tcell="❌"; status="RED"
         findings+=("**$name** tests failed: $(grep -E '✘|error:' "$LOG/test-$name.log" | head -3 | tr '\n' ' ')")
       fi
