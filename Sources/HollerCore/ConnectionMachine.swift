@@ -39,9 +39,9 @@ public struct ConnectionMachine: Sendable, Equatable {
         case let (.backingOff(attempt), .retryTimerFired):
             let next = attempt + 1
             return (.connecting(attempt: next), [.publish(.connecting(attempt: next)), .openSocket])
-        case (.connected, .stop):
+        case (.connected, .stop), (.connecting, .stop):
             return (.stopped, [.closeSocket, .publish(.stopped)])
-        case (.connecting, .stop), (.backingOff, .stop), (.idle, .stop):
+        case (.backingOff, .stop), (.idle, .stop):
             return (.stopped, [.publish(.stopped)])
         default:
             return (state, [])
