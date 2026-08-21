@@ -107,12 +107,12 @@ check_component() { # name dir
     # an app test bundle exists this must be derived from its executed-test evidence in the scheme log, not a directory.
     case $sr in
       0) bcell="✅"; tcell="—";;
-      1) status="RED"
-         local simlog; simlog=$(failed_sim_log "$name")
-         if sim_build_failed "$simlog"; then bcell="❌"; tcell="—"
+      1) local simlog; simlog=$(failed_sim_log "$name")
+         if sim_build_failed "$simlog"; then bcell="❌"; tcell="—"; status="RED"
            findings+=("**$name** simulator lane: build failed: $(grep -E '❌|error:' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
-         else bcell="✅"; tcell="—"
-           findings+=("**$name** simulator lane: tests failed under this scheme (package suites on the simulator): $(grep -E '✘|error:|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
+         else bcell="✅"; tcell="—"  # the app built; the failing suites are package tests run under this scheme —
+           # that is a lane failure (counted in Totals), not this app target's status
+           findings+=("Simulator lane ($(basename "$simlog" .log | sed 's/^sim-//')): package test suites failed on the simulator (not an app cell): $(grep -E '✘|error:|\*\* TEST' "$simlog" 2>/dev/null | head -3 | tr '\n' ' ')")
          fi;;
       3) bcell="❓"; tcell="—"; status="YELLOW"; findings+=("**$name** simulator lane unverified (environment failure): $(sim_env_excerpt "$name")");;
       *) bcell="❓"; tcell="—"; status="YELLOW";;
@@ -187,6 +187,8 @@ check_component() { # name dir
 for dir in Sources/*/; do name=$(basename "$dir"); check_component "$name" "Sources/$name"; done
 for dir in Apps/*/; do name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
 
+# Scheme-level test failures (app built, package suites failed on the simulator) are reported on the lane, not a row.
+lane_test_failures=0; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && ! sim_build_failed "$LOG/sim-${sim_schemes[$i]}.log" && lane_test_failures=$((lane_test_failures+1)); done
 sim_note=""; for i in "${!sim_schemes[@]}"; do case "${sim_results[$i]}" in 0) sim_note+="${sim_schemes[$i]} ✅ ";; 1) sim_note+="${sim_schemes[$i]} ❌ ";; 3) sim_note+="${sim_schemes[$i]} ❓(env) ";; *) sim_note+="${sim_schemes[$i]} ❓ ";; esac; done
 [[ $NO_SIM -eq 1 ]] && sim_note="⏭ skipped (--no-sim): app rows unverified"
 periphery_note=$([[ $periphery_status -eq 0 ]] && echo "✅${periphery_config_warning:+ (⚠️ $periphery_config_warning)}" || echo "❓ periphery exited $periphery_status (dead-code column unverified)")
@@ -204,8 +206,8 @@ Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not app
 $(printf '%s\n' "${rows[@]}")
 
 ## Findings
-$( ((${#findings[@]})) && printf -- '- %s\n' "${findings[@]}" || echo "none" )
+$( ((${#findings[@]})) && printf -- '- %s\n' "${findings[@]}" | awk '!seen[$0]++' || echo "none" )
 
 ## Totals
-GREEN $green · YELLOW $yellow · RED $red
+GREEN $green · YELLOW $yellow · RED $red$( (( lane_test_failures > 0 )) && echo " · simulator lane test failures: $lane_test_failures (see Findings)" )
 MD
