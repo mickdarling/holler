@@ -9,6 +9,7 @@ public actor PushToTalkGatedControl: TalkControlling {
     private let channelID: ChannelID
     private var channelName = ""
     private var roster: [Participant] = []
+    private var receivingFrom: ParticipantID?
     private var activeSpeaker: String?
     private var running = false
     private var pumps: [Task<Void, Never>] = []
@@ -71,15 +72,22 @@ public actor PushToTalkGatedControl: TalkControlling {
 
     /// Remote speaker → system active participant; cleared when we leave `.receiving`.
     private func mirror(_ state: TalkMachine.State) async {
+        if case let .receiving(speaker) = state { receivingFrom = speaker } else { receivingFrom = nil }
+        await refreshActiveSpeaker()
+    }
+
+    /// The roster and state streams arrive on separate pumps: a roster that resolves the current speaker's name
+    /// after `.receiving` was mirrored must re-mirror, or the system UI keeps showing the raw id.
+    private func update(roster: [Participant]) async {
+        self.roster = roster
+        await refreshActiveSpeaker()
+    }
+
+    private func refreshActiveSpeaker() async {
         guard running else { return }
-        var name: String?
-        if case let .receiving(speaker) = state {
-            name = roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue
-        }
+        let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
         guard name != activeSpeaker else { return }
         activeSpeaker = name
         try? await service.setActiveSpeaker(name, on: channelID)
     }
-
-    private func update(roster: [Participant]) { self.roster = roster }
 }

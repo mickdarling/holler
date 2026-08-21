@@ -82,6 +82,20 @@ struct PushToTalkGatedControlTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("a roster that arrives after .receiving re-mirrors the speaker by display name")
+    func rosterAfterReceiving() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        inner.states.send(.receiving(from: becca.id))
+        await eventually { await service.count(.speaker("b", channel)) == 1 }
+        inner.roster.send([becca])
+        await eventually { await service.count(.speaker("Becca", channel)) == 1 }
+        inner.roster.send([becca, Participant(id: ParticipantID("c"), displayName: "Cass")])  // same name: no call
+        await eventually { await gate.currentRoster.count == 2 }
+        #expect(await service.count(.speaker("Becca", channel)) == 1)
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("stop leaves the channel and undoes a rejoin that was in flight")
     func stopDuringRejoin() async throws {
         let harness = try await makeGate()
