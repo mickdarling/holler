@@ -19,6 +19,24 @@ scripts/check-boundaries.sh >/tmp/holler-health-boundaries.log 2>&1; bounds_all=
 sim_status=2  # 0 ok, 1 failed, 2 skipped
 if [[ $NO_SIM -eq 0 ]]; then scripts/verify.sh sim >/tmp/holler-health-sim.log 2>&1 && sim_status=0 || sim_status=1; fi
 
+# Prints a finding if an ATS exemption is actually ENABLED for this component: Info.plist/entitlements under its dir
+# with <true/>, or (apps only) its own target block in project.yml setting NSAllowsArbitraryLoads: true.
+ats_enabled() { # name dir
+  python3 - "$1" "$2" <<'PYX'
+import re, sys, pathlib
+name, d = sys.argv[1], sys.argv[2]
+for f in list(pathlib.Path(d).rglob("*.plist")) + list(pathlib.Path(d).rglob("*.entitlements")):
+    if re.search(r"<key>NSAllowsArbitraryLoads</key>\s*<true\s*/>", f.read_text(), re.S):
+        print(f"{f}: NSAllowsArbitraryLoads enabled")
+proj = pathlib.Path("project.yml")
+if proj.exists():
+    text = proj.read_text()
+    m = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  \S|\Z)", text, re.S | re.M)
+    if m and re.search(r"NSAllowsArbitraryLoads:\s*(true|YES|yes)\b", m.group(1)):
+        print(f"project.yml target {name}: NSAllowsArbitraryLoads enabled")
+PYX
+}
+
 layer_of() { grep -E "^ +$1:" docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
 check_component() { # name dir
@@ -30,7 +48,9 @@ check_component() { # name dir
     case $sim_status in 0) bcell="✅"; tcell="✅";; 1) bcell="❌"; tcell="❌"; status="RED";; *) bcell="⏭"; tcell="⏭"; status="YELLOW";; esac
     dcell="—"  # periphery scans only SwiftPM targets; app sources are not analyzed
   else
-    local b=0; grep -qE "^$PWD/$dir/.*error:" /tmp/holler-health-build.log && b=1; bcell=$(mark $b); (( b )) && status="RED"
+    if grep -qE "^$PWD/$dir/.*error:" /tmp/holler-health-build.log; then bcell="❌"; status="RED"
+    elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
+    else bcell="✅"; fi
     if [[ -d "Tests/${name}Tests" ]]; then
       swift test --skip-build --filter "${name}Tests" >/tmp/holler-health-test-"$name".log 2>&1 && tcell="✅" || { tcell="❌"; status="RED"; }
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
@@ -50,7 +70,7 @@ check_component() { # name dir
   # --- size
   local sz=0; while IFS= read -r f; do (( $(wc -l < "$f") > 200 )) && sz=1; done < <(find "$dir" -name '*.swift'); szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
-  local rhits; rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|catch\s*\{\s*\}|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; grep -nE 'NSAllowsArbitraryLoads' -r "$dir" project.yml --include='*.plist' --include='*.entitlements' --include='*.yml' 2>/dev/null; } | head -5)
+  local rhits; rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|catch\s*\{\s*\}|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; ats_enabled "$name" "$dir"; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $rhits"); else rcell="✅"; fi
   # --- DI posture: .shared / static var outside adapters and apps
   local dhits; dhits=$(grep -nE '\.shared\b|static var ' -r "$dir" --include='*.swift' 2>/dev/null | head -5)
