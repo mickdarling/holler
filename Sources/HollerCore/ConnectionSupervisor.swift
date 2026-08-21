@@ -18,7 +18,8 @@ public actor ConnectionSupervisor {
     private let healthBroadcaster = Broadcaster<HealthState>()
     private let messageBroadcaster = Broadcaster<WireMessage>(bufferingPolicy: .bufferingNewest(256))
 
-    /// - Parameter livenessInterval: ping cadence while connected; `nil` disables the watchdog.
+    /// - Parameter livenessInterval: ping cadence while connected; `nil` disables the watchdog. Values under one
+    ///   second are clamped to one second so a misconfiguration cannot spin the watchdog.
     public init(
         transport: any SignalingTransport,
         sleeper: any Sleeper = ContinuousClockSleeper(),
@@ -30,7 +31,7 @@ public actor ConnectionSupervisor {
         self.sleeper = sleeper
         self.random = random
         self.policy = policy
-        self.livenessInterval = livenessInterval
+        self.livenessInterval = livenessInterval.map { max($0, .seconds(1)) }
     }
 
     public var currentState: ConnectionMachine.State { state }
@@ -70,7 +71,11 @@ public actor ConnectionSupervisor {
         livenessState = next
         for effect in effects {
             switch effect {
-            case let .sendPing(nonce): try? await transport.send(.ping(nonce: nonce))
+            case let .sendPing(nonce):
+                // Child task: a suspended send (backpressure, half-open socket) must not stall the ticker,
+                // otherwise `missed` could never reach `maxMissed` in exactly the failure the watchdog exists for.
+                let transport = self.transport
+                Task { try? await transport.send(.ping(nonce: nonce)) }
             case .declareDead:
                 await transport.disconnect()
                 await handle(.socketClosed(reason: "liveness: \(liveness.maxMissed) pings unanswered"))
