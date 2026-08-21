@@ -102,7 +102,7 @@ public actor ConnectionSupervisor {
 
     private func startLiveness() {
         guard let interval = livenessInterval else { return }
-        livenessState = LivenessMachine.State()
+        livenessState = LivenessMachine.State(nextNonce: livenessState.nextNonce)
         livenessGeneration &+= 1
         let generation = livenessGeneration
         livenessTask?.cancel()
@@ -118,7 +118,7 @@ public actor ConnectionSupervisor {
         livenessTask?.cancel()
         livenessTask = nil
         livenessGeneration &+= 1
-        livenessState = LivenessMachine.State()
+        livenessState = LivenessMachine.State(nextNonce: livenessState.nextNonce)
     }
 
     private func pumpTransportEvents() async {

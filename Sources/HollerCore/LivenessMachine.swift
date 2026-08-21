@@ -1,5 +1,6 @@
 /// Detects half-open sockets: ping on every tick, count unanswered pings, declare the connection dead after
-/// `maxMissed` consecutive misses. Pure; the supervisor interprets the effects.
+/// `maxMissed` consecutive misses. Pure; the supervisor interprets the effects. Nonces are never reused within a
+/// supervisor's lifetime (resets keep `nextNonce`) so a late pong from a previous socket cannot match a new ping.
 public struct LivenessMachine: Sendable, Equatable {
     public struct State: Sendable, Equatable {
         public var nextNonce: UInt64
@@ -35,7 +36,7 @@ public struct LivenessMachine: Sendable, Equatable {
             var next = state
             if next.pending != nil {
                 next.missed += 1
-                if next.missed >= maxMissed { return (State(), [.declareDead]) }
+                if next.missed >= maxMissed { return (State(nextNonce: next.nextNonce), [.declareDead]) }
             }
             let nonce = next.nextNonce
             next.pending = nonce
@@ -48,7 +49,7 @@ public struct LivenessMachine: Sendable, Equatable {
             next.missed = 0
             return (next, [])
         case .reset:
-            return (State(), [])
+            return (State(nextNonce: state.nextNonce), [])
         }
     }
 }
