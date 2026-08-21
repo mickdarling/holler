@@ -50,7 +50,8 @@ sim_build_failed() { grep -qE "Testing cancelled because the build failed|BUILD 
 # Only xcodebuild's own output counts (the wrapper prints "-- <scheme> on <destination>" before calling it).
 sim_ran_xcodebuild() { grep -qE "Testing started|Test session results|BUILD FAILED|TEST FAILED|Test Succeeded|Testing cancelled because the build failed|The following build commands failed" "$1"; }
 # Where did a build failure come from? app/dependency sources, a package test target, or unknown (no file diagnostics).
-sim_build_failure_scope() { if grep -qE "❌ .*/(Sources|Apps)/[^ ]*\.swift:[0-9]+:[0-9]+:" "$1"; then echo app; elif grep -qE "❌ .*/Tests/[^ ]*\.swift:[0-9]+:[0-9]+:" "$1"; then echo tests; else echo unknown; fi; }
+# Matches xcbeautify (❌ /path/file.swift:L:C: msg) and raw xcodebuild (/path/file.swift:L:C: error: msg) diagnostics.
+sim_build_failure_scope() { if grep -qE "(^|❌ )[^ ]*/(Sources|Apps)/[^ ]*\.swift:[0-9]+:[0-9]+: " "$1"; then echo app; elif grep -qE "(^|❌ )[^ ]*/Tests/[^ ]*\.swift:[0-9]+:[0-9]+: " "$1"; then echo tests; else echo unknown; fi; }
 while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
@@ -60,8 +61,13 @@ while IFS='|' read -r scheme _ _; do
   else sim_results+=(1); fi
 done < scripts/app-schemes.txt
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
-# Shared app code compiles into every scheme: worst result wins (1 > 3 > 2 > 0).
-sim_result_shared() { local r=0 i; for i in "${!sim_results[@]}"; do case "${sim_results[$i]}" in 1) echo 1; return;; 3) r=3;; 2) [[ $r -eq 0 ]] && r=2;; esac; done; echo $r; }
+# Shared app code compiles into every scheme, so its Build cell aggregates every scheme's BUILD outcome (not the
+# scheme's test outcome): any app/dependency build failure → ❌; any lane that did not prove a build (environment
+# failure, not run, test-target compile failure, unknown) → ❓; otherwise ✅.
+shared_build_cell() { local i r log unverified=0; for i in "${!sim_results[@]}"; do r="${sim_results[$i]}"; log="$LOG/sim-${sim_schemes[$i]}.log"
+    case "$r" in 0) ;; 1) if sim_build_failed "$log"; then [[ "$(sim_build_failure_scope "$log")" == "app" ]] && { echo "❌"; return; }; unverified=1; fi;; *) unverified=1;; esac; done
+  (( unverified )) && echo "❓" || echo "✅"; }
+shared_unverified_note() { local i r; for i in "${!sim_results[@]}"; do r="${sim_results[$i]}"; case "$r" in 3) echo "${sim_schemes[$i]} (environment failure)"; return;; 2) echo "${sim_schemes[$i]} (not run)"; return;; esac; done; echo "a scheme with an unattributable build failure"; }
 # Log for a failed app row: the named scheme's own log, or for Shared the first scheme that actually failed.
 # Shared: prefer a scheme whose failure is a real build failure over one whose package suites failed.
 failed_sim_log() { local i log; if [[ "$1" != "Shared" ]]; then echo "$LOG/sim-$1.log"; return; fi
@@ -108,7 +114,14 @@ check_component() { # name dir
   local bcell tcell lcell dcell bocell szcell rcell dicell
   # --- build / tests: package targets from SwiftPM; app targets from the simulator lane
   if [[ "$layer" == "app" ]]; then
-    local sr; if [[ "$name" == "Shared" ]]; then sr=$(sim_result_shared); else sr=$(sim_result_for "$name"); fi
+    local sr; if [[ "$name" == "Shared" ]]; then
+      # Shared: build outcome aggregated across schemes; package-suite failures stay on the lane (see Totals).
+      case "$(shared_build_cell)" in
+        "✅") sr=0;;
+        "❌") sr=1;;
+        *) sr=2; findings+=("**Shared** build unverified: not proven on $(shared_unverified_note)");;
+      esac
+    else sr=$(sim_result_for "$name"); fi
     # App targets own no test bundle (project.yml schemes list package suites only), so Tests is not applicable; when
     # an app test bundle exists this must be derived from its executed-test evidence in the scheme log, not a directory.
     case $sr in
