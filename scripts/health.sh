@@ -33,6 +33,10 @@ pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'i
 for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
 pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
+# Is <dir> the declared source path of target <name>? (A stray Sources/<Name> next to a target declared at another path
+# is not the target: nothing in it is compiled or scanned.)
+is_pkg_target_at() { local row path; row=$(grep -E "^$1\|" <<<"$pkg_target_rows" | head -1); [[ -n "$row" ]] || return 1
+  path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
 # The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
 test_dir_for() { local row; row=$(grep -E "^$1Tests\|" <<<"$pkg_target_rows" | head -1); local path; path=$(cut -d'|' -f2 <<<"$row"); echo "${path:-Tests/$1Tests}"; }
 # Literal path-prefix match on a log (no regex: target paths may contain metacharacters).
@@ -208,9 +212,9 @@ check_component() { # name dir
   elif ! pkg_targets_known; then
     bcell="❓"; tcell="❓"; dcell="❓"; status="YELLOW"
     findings+=("**$name** unverified: the SwiftPM target list is unavailable (swift package describe failed)")
-  elif ! is_pkg_target "$name"; then
+  elif ! is_pkg_target_at "$name" "$dir"; then
     bcell="❓"; tcell="❓"; dcell="❓"; status="YELLOW"
-    findings+=("**$name** unverified: Sources/$name is not a target in Package.swift (nothing here is compiled or tested)")
+    findings+=("**$name** unverified: $dir is not a declared target path in Package.swift (nothing here is compiled or tested)")
   else
     if has_error_under "$ROOT/$dir/" "$LOG/build.log"; then bcell="❌"; status="RED"
       findings+=("**$name** build errors: $(grep -F -- "$ROOT/$dir/" "$LOG/build.log" | grep "error:" | head -3 | strip_root | tr '\n' ' ')")
@@ -250,8 +254,9 @@ check_component() { # name dir
   fi
   # --- boundaries: production dir and the component's own test dir
   if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-  elif [[ "$dir" != Sources/* && "$dir" != Apps/* ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker scans Sources/, Tests/, Apps/ only
-    findings+=("**$name** boundaries unverified: $dir is outside the roots scripts/check-boundaries.sh scans (Sources/, Tests/, Apps/)")
+  elif [[ "$dir" != Sources/* && "$dir" != Apps/* ]] || { [[ -d "$tdir" && "$tdir" != Tests/* ]]; }; then  # checker scans Sources/, Tests/, Apps/ only
+    bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+    findings+=("**$name** boundaries unverified: $dir / $tdir are not both under the roots scripts/check-boundaries.sh scans (Sources/, Tests/, Apps/)")
   elif [[ "$layer" == "unknown" ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker skips modules missing from the graph
     findings+=("**$name** boundaries unverified: not declared in docs/module-graph.yml (imports are not checked)")
   elif has_line_under "$dir" "$tdir" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
