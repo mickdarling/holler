@@ -42,11 +42,19 @@ target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_row
 # is not the target: nothing in it is compiled or scanned.)
 is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || return 1
   path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
-# The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
-# Every test target of component <name>: <name>Tests plus any test target named <name>… that depends on <name>
-# (e.g. FooIntegrationTests, FooSpecs). Dependency alone is not enough: every test target depends on the shared
-# test-support library. One row per line; empty when the component has no declared test target.
-test_target_rows_for() { awk -F'|' -v n="$1" '$3 == "test" && ($1 == n "Tests" || (index($1, n) == 1 && index("," $5 ",", "," n ",") > 0))' <<<"$pkg_target_rows"; }
+# Every test target of component <name>, one row per line (empty when it has none): <name>Tests; any test target
+# named <name>… that depends on <name> (FooIntegrationTests, FooSpecs); and any test target that depends on <name> and
+# is not claimed by another dependency's name (IntegrationSpecs depending on Foo) — such a target counts for each of
+# its unclaimed production dependencies. A *TestSupport library is claimed only by an exact <name>Tests: every test
+# target depends on it, so dependency alone would attach every suite to it.
+test_target_rows_for() { awk -F'|' -v n="$1" '$3 == "test" {
+    if ($1 == n "Tests") { print; next }
+    if (n ~ /TestSupport$/ || index("," $5 ",", "," n ",") == 0) next
+    if (index($1, n) == 1) { print; next }
+    split($5, d, ","); claimed = 0
+    for (i in d) if (d[i] != "" && d[i] != n && index($1, d[i]) == 1) claimed = 1
+    if (!claimed) print
+  }' <<<"$pkg_target_rows"; }
 # Directories of those test targets (declared path, or Tests/<target>); Tests/<name>Tests when none is declared.
 test_dirs_for() { local rows; rows=$(test_target_rows_for "$1"); [[ -n "$rows" ]] || { echo "Tests/$1Tests"; return; }
   awk -F'|' '{ print ($2 != "" ? $2 : "Tests/" $1) }' <<<"$rows"; }
@@ -68,8 +76,12 @@ for i, line in enumerate(text.splitlines()):
     m = re.match(r"^exclude_targets:\s*(.*?)\s*(#.*)?$", line)
     if not m: continue
     rest = m.group(1)
-    if rest.startswith("["):                       # flow form: exclude_targets: [A, "B"]
-        names += [x.strip().strip("'\"") for x in rest.strip("[]").split(",") if x.strip()]
+    if rest.startswith("["):                       # flow form: exclude_targets: [A, "B"] — possibly spanning lines
+        buf, j, lines = rest, i + 1, text.splitlines()
+        while "]" not in buf and j < len(lines):
+            buf += " " + re.sub(r"#.*$", "", lines[j]).strip(); j += 1
+        inside = buf[1:buf.index("]")] if "]" in buf else buf[1:]
+        names += [x.strip().strip("'\"") for x in inside.split(",") if x.strip()]
     else:                                          # block form: "- A" / "- 'B'" lines that follow
         for follower in text.splitlines()[i + 1:]:
             b = re.match(r"^\s+-\s*(.+?)\s*(#.*)?$", follower)
