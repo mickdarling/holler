@@ -175,7 +175,7 @@ extension PushToTalkGatedControl {
     public func press() async {
         guard joined else { return }
         releasePending = false  // a new press supersedes a release the begin had not caught up with
-        guard !beginRequested else { return }
+        guard !beginRequested, !systemTransmitting else { return }  // a live system transmission: already pressed
         beginRequested = true  // before the await: a release that overtakes the suspended command must see it
         if (try? await service.requestBeginTransmitting(channelID)) == nil {  // never sent: nothing is outstanding
             beginRequested = false; releasePending = false
