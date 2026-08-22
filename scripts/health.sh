@@ -35,14 +35,16 @@ swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log
 US=$'\x1f'; RS=$'\x1e'
 # Each target's compiled source files (honouring `exclude`/`sources`) go to $LOG/sources-<safe name>.list, one path per
 # line, so per-component scans cover exactly what the component compiles.
-pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json, os, re, sys
+pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json, os, re, sys, hashlib
 log_dir = sys.argv[1]
+def safe(name):  # readable prefix + hash: bounded length, injective, same as safe_name below
+    enc = "".join(c if re.match(r"[A-Za-z0-9._-]", c) else "".join("%%%02X" % b for b in c.encode()) for c in name)
+    return enc[:48] + "-" + hashlib.sha256(name.encode()).hexdigest()[:16]
 for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]):
     deps = "\x1e".join(t.get("target_dependencies", []))
     print("\x1f".join([t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps]))
     base = t.get("path") or ("Tests/" + t["name"] if t.get("type") == "test" else "Sources/" + t["name"])
-    safe = "".join(c if re.match(r"[A-Za-z0-9._-]", c) else "".join("%%%02X" % b for b in c.encode()) for c in t["name"])
-    with open(os.path.join(log_dir, "sources-" + safe + ".list"), "w") as f:
+    with open(os.path.join(log_dir, "sources-" + safe(t["name"]) + ".list"), "w") as f:
         f.write("".join(base.rstrip("/") + "/" + src + "\n" for src in t.get("sources", []) if src.endswith(".swift")))' "$LOG" 2>/dev/null)
 pkg_targets=$(cut -d"$US" -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
@@ -292,10 +294,13 @@ for f in files:
 PYX
 }
 
-# A filesystem-safe, collision-free form of a target name for evidence-log filenames: every character outside
-# [A-Za-z0-9._-] becomes %XX per UTF-8 byte (so `Foo/Bar` and `Foo|Bar` stay distinct). Same encoding as the describe step.
-safe_name() { python3 -c 'import re, sys
-print("".join(c if re.match(r"[A-Za-z0-9._-]", c) else "".join("%%%02X" % b for b in c.encode()) for c in sys.argv[1]), end="")' "$1"; }
+# A filesystem-safe, collision-free, bounded form of a target name for evidence-log filenames: a readable prefix (every
+# character outside [A-Za-z0-9._-] percent-encoded per UTF-8 byte, cut at 48) plus 16 hex of the name's SHA-256, so
+# `Foo/Bar` and `Foo|Bar` stay distinct and a long multibyte name cannot exceed filename limits. Same as the describe step.
+safe_name() { python3 -c 'import re, sys, hashlib
+name = sys.argv[1]
+enc = "".join(c if re.match(r"[A-Za-z0-9._-]", c) else "".join("%%%02X" % b for b in c.encode()) for c in name)
+print(enc[:48] + "-" + hashlib.sha256(name.encode()).hexdigest()[:16], end="")' "$1"; }
 # The component's layer from the module graph: the key is matched literally (a name may contain regex metacharacters).
 layer_of() { awk -v n="$1" '/^ +[^ ]/ { l = $0; sub(/^ +/, "", l); if (index(l, n ":") == 1) { print; exit } }' docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
