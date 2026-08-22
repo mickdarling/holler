@@ -105,8 +105,10 @@ def outside_quotes(s):  # the text of s with quoted scalars blanked, for feature
         elif ch in "'\"": q = ch; out.append(" ")
         else: out.append(ch)
     return "".join(out)
-if re.search(r"(^|\s)[&*!]|<<\s*:", "\n".join(outside_quotes(l.split("#")[0]) for l in text.splitlines())):
-    print("__UNPARSEABLE__"); raise SystemExit   # anchors, aliases, tags, merge keys: not resolvable here
+body = "\n".join(outside_quotes(l.split("#")[0]) for l in text.splitlines())
+content_lines = [l for l in body.splitlines() if l.strip() and not l.strip().startswith("%")]
+if re.search(r"(^|\s)[&*!]|<<\s*:", body) or (content_lines and content_lines[0].lstrip().startswith(("{", "[", "---"))):
+    print("__UNPARSEABLE__"); raise SystemExit   # anchors, aliases, tags, merge keys, or a top-level flow/multi-document form
 def tokenize(s, sep=None, stop=None):
     # Walk s with YAML quoting rules: inside "…" a backslash escapes the next character; inside '…' a doubled ''
     # is a literal quote. Outside quotes: '#' starts a comment that runs to the end of that physical line, `sep`
