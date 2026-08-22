@@ -37,8 +37,20 @@ periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 periphery_excluded=$(python3 - <<'PYX'
 import re, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
-m = re.search(r"^exclude_targets:\s*\n((?:\s+-\s*.+\n?)+)", text, re.M)
-print("\n".join(re.findall(r"-\s*(\S+)", m.group(1))) if m else "")
+names = []
+for i, line in enumerate(text.splitlines()):
+    m = re.match(r"^exclude_targets:\s*(.*?)\s*(#.*)?$", line)
+    if not m: continue
+    rest = m.group(1)
+    if rest.startswith("["):                       # flow form: exclude_targets: [A, "B"]
+        names += [x.strip().strip("'\"") for x in rest.strip("[]").split(",") if x.strip()]
+    else:                                          # block form: "- A" / "- 'B'" lines that follow
+        for follower in text.splitlines()[i + 1:]:
+            b = re.match(r"^\s+-\s*(.+?)\s*(#.*)?$", follower)
+            if not b: break
+            names.append(b.group(1).strip().strip("'\""))
+    break
+print("\n".join(n for n in names if n))
 PYX
 )
 periphery_config_warning=$(grep -E "^warning: \.periphery\.yml" "$LOG/periphery.log" | head -1)
@@ -66,11 +78,14 @@ sim_build_failed() { [[ -f "$1" ]] || return 1
 # <destination>" before calling it; a failure before xcodebuild — xcodegen, destination resolution — is not a build result).
 sim_ran_xcodebuild() { [[ -f "$1" ]] || return 1
   grep -qE "Test session results|Testing started|Testing cancelled|\*\* TEST (FAILED|SUCCEEDED) \*\*|\*\* BUILD (FAILED|SUCCEEDED) \*\*|The following build commands failed" "$1"; }
+# Does the package build log carry an error under a path prefix? One awk, not `grep | grep -q` (which can SIGPIPE the
+# upstream grep under pipefail and turn a real failure into "no match").
+has_error_under() { awk -v p="$1" 'index($0, p) && /error:/ { f = 1; exit } END { exit !f }' "$2"; }
 # Where did a build failure come from? Paths are matched relative to $ROOT so neither regex metacharacters nor spaces
 # in the checkout path matter. app = Sources/ or Apps/Shared (a dependency of every app) or the component's own dir ;
 # tests = a package test target ; other-app = another app target (this one is unproven, not failed) ; unknown = no file diagnostic.
 sim_build_failure_scope() { # raw-log [component-dir]
-  local rel; rel=$(strip_root < "$1" | grep -E "^[^ ]*\.swift:[0-9]+:[0-9]+: error:" || true)
+  local rel; rel=$(strip_root < "$1" | grep -E "^[^:]*\.swift:[0-9]+:[0-9]+: error:" || true)  # errors only; paths may contain spaces
   [[ -z "$rel" ]] && { echo unknown; return; }
   if grep -qE "^(Sources|Apps/Shared)/" <<<"$rel"; then echo app
   elif [[ -n "${2:-}" ]] && grep -qE "^${2}/" <<<"$rel"; then echo app
@@ -188,12 +203,12 @@ check_component() { # name dir
     bcell="❓"; tcell="❓"; dcell="❓"; status="YELLOW"
     findings+=("**$name** unverified: Sources/$name is not a target in Package.swift (nothing here is compiled or tested)")
   else
-    if grep -F -- "$ROOT/$dir/" "$LOG/build.log" | grep -q "error:"; then bcell="❌"; status="RED"
+    if has_error_under "$ROOT/$dir/" "$LOG/build.log"; then bcell="❌"; status="RED"
       findings+=("**$name** build errors: $(grep -F -- "$ROOT/$dir/" "$LOG/build.log" | grep "error:" | head -3 | strip_root | tr '\n' ' ')")
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
     if [[ -d "Tests/${name}Tests" ]]; then
-      if grep -F -- "$ROOT/Tests/${name}Tests/" "$LOG/build.log" | grep -q "error:"; then tcell="❌"; status="RED"
+      if has_error_under "$ROOT/Tests/${name}Tests/" "$LOG/build.log"; then tcell="❌"; status="RED"
         findings+=("**$name** test target failed to compile: $(grep -F -- "$ROOT/Tests/${name}Tests/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
       elif swift test --skip-build --filter "^${name}Tests\." ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$name.log" 2>&1; then
