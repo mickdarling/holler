@@ -28,10 +28,13 @@ mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 # Whole-package passes once; per-component attribution by path. Tool failures are recorded, not swallowed.
 swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log" 2>&1; build_all=$?
 # Declared SwiftPM targets: a Sources/<name> directory that is not a target is never compiled, so its row is unverified.
-# name|path|type|c99name per declared target (path relative to the package root; c99name is the Swift module identifier
-# SwiftPM uses for the test filter, e.g. Foo+BarTests → Foo_BarTests).
+# name|path|type|c99name|deps per declared target (path relative to the package root; c99name is the Swift module
+# identifier SwiftPM uses for the test filter, e.g. Foo+BarTests → Foo_BarTests; deps = comma-separated target dependencies,
+# used to associate a test target with the component it tests when its name is not <Component>Tests).
 pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys
-for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"])))' 2>/dev/null)
+for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]):
+    deps = ",".join(t.get("target_dependencies", []))
+    print("%s|%s|%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps))' 2>/dev/null)
 pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_rows"; }  # literal name match
@@ -40,9 +43,14 @@ target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_row
 is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || return 1
   path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
 # The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
-test_dir_for() { local path; path=$(target_row "$1Tests" | cut -d'|' -f2); echo "${path:-Tests/$1Tests}"; }
+# The test target for component <name>: <name>Tests if declared, else a test target named <name>… that depends on <name>
+# (e.g. FooSpecs for Foo). Dependency alone is not enough: every test target depends on the shared test-support library.
+test_target_row_for() { local row; row=$(target_row "$1Tests"); [[ -n "$row" ]] && { echo "$row"; return; }
+  awk -F'|' -v n="$1" '$3 == "test" && index($1, n) == 1 { split($5, d, ","); for (i in d) if (d[i] == n) { print; exit } }' <<<"$pkg_target_rows"; }
+test_dir_for() { local row path; row=$(test_target_row_for "$1"); path=$(cut -d'|' -f2 <<<"$row"); [[ -n "$row" && -z "$path" ]] && path="Tests/$(cut -d'|' -f1 <<<"$row")"
+  echo "${path:-Tests/$1Tests}"; }
 # ERE for `swift test --filter`: anchored on the test module's c99name with every regex metacharacter escaped.
-test_filter_for() { local c99; c99=$(target_row "$1Tests" | cut -d'|' -f4); c99=${c99:-$1Tests}
+test_filter_for() { local c99; c99=$(test_target_row_for "$1" | cut -d'|' -f4); c99=${c99:-$1Tests}
   printf '^%s\\.' "$(printf '%s' "$c99" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"; }
 # Literal path-prefix match on a log (no regex: target paths may contain metacharacters).
 has_line_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1) { f = 1; exit } END { exit !f }' "$3"; }
@@ -296,7 +304,7 @@ check_component() { # name dir
 # Package rows come from the declared targets (any path), so a target outside Sources/ is not silently omitted;
 # Sources/* directories that are not targets get a row too (rendered unverified) so stray code is visible.
 seen_dirs=""
-while IFS='|' read -r tname tpath ttype _; do  # name|path|type|c99name
+while IFS='|' read -r tname tpath ttype _; do  # name|path|type|c99name|deps
   [[ -z "$tname" || "$ttype" == "test" ]] && continue
   [[ -z "$tpath" ]] && tpath="Sources/$tname"
   check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
