@@ -418,18 +418,21 @@ check_component() { # name dir
   ats_out=$(ats_enabled "$name" "$dir" 2>/dev/null); ats_status=$?
   # A declared package target is scanned over exactly the files it compiles (SwiftPM `exclude`/`sources` honoured);
   # anything else over its directory as a whole.
+  # An existing manifest is authoritative even when empty (a target compiling no Swift file scans nothing).
   local srclist=""; is_pkg_target_at "$name" "$dir" && srclist="$LOG/sources-$(safe_name "$name").list"
-  [[ -n "$srclist" && -s "$srclist" ]] || srclist=""
+  [[ -n "$srclist" && -f "$srclist" ]] || srclist=""
   catch_out=$(empty_catches "$dir" "$srclist" 2>/dev/null); catch_status=$?
-  local rgrep
-  if [[ -n "$srclist" ]]; then rgrep=$(tr '\n' '\0' <"$srclist" | xargs -0 grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' 2>/dev/null || true)
-  else rgrep=$(grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null || true); fi
+  # grep over the manifest's files (none when it is empty) or, without a manifest, over the directory.
+  grep_sources() { # pattern
+    if [[ -n "$srclist" ]]; then [[ -s "$srclist" ]] && tr '\n' '\0' <"$srclist" | xargs -0 grep -nE "$1" 2>/dev/null; true
+    else grep -nE "$1" -r "$dir" --include='*.swift' 2>/dev/null; true; fi; }
+  local rgrep; rgrep=$(grep_sources 'try!|as!|@unchecked Sendable|arc4random|print\(')
   rhits=$( { printf '%s\n' "$rgrep" "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $(tr '\n' ' ' <<<"$rhits")")
   elif (( ats_status != 0 || catch_status != 0 )); then rcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** risk grep unverified: helper exited (ats=$ats_status, catch=$catch_status)")
   else rcell="✅"; fi
   # --- DI posture: .shared / static var outside adapters and apps
-  local dhits; dhits=$(grep -nE '\.shared\b|static var ' -r "$dir" --include='*.swift' 2>/dev/null | head -5)
+  local dhits; dhits=$(grep_sources '\.shared\b|static var ' | head -5)  # same compiled-source set as the risk grep
   if [[ "$layer" == "adapter" || "$layer" == "app" ]] || (( is_app )); then dicell="—"  # adapters wrap Apple singletons; app-layer targets (Xcode apps and package targets in the app layer) are composition roots
   elif [[ -n "$dhits" ]]; then dicell="❌"; status="RED"; findings+=("**$name** DI: $(tr '\n' ' ' <<<"$dhits")")
   else dicell="✅"; fi
