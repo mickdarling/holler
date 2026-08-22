@@ -49,14 +49,15 @@ is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || 
 # (FooIntegrationTests, FooSpecs); and any test target not claimed by another dependency's name (IntegrationSpecs
 # depending on Foo) — such a target counts for each of its unclaimed production dependencies. A name claim goes to the
 # most specific dependency (FooBarTests depending on FooBar and Foo belongs to FooBar only). A *TestSupport library is
-# claimed only by an exact <name>Tests: every test target depends on it, so dependency alone would attach every suite.
+# attached only by name (<Name>Tests, <Name>Specs, …): every test target depends on it, so dependency alone would attach
+# every suite.
 test_target_rows_for() { awk -F"$US" -v n="$1" -v rs="$RS" '$3 == "test" {
     if (index(rs $5 rs, rs n rs) == 0) next
     if ($1 == n "Tests") { print; next }
-    if (n ~ /TestSupport$/) next
     split($5, d, rs); best = ""
     for (i in d) if (d[i] != "" && index($1, d[i]) == 1 && length(d[i]) > length(best)) best = d[i]
-    if (best == n || best == "") print   # ours by the most specific name claim, or unclaimed by any dependency
+    if (best == n) { print; next }                  # ours by the most specific name claim (FooTestSupportSpecs too)
+    if (best == "" && n !~ /TestSupport$/) print    # unclaimed: each production dependency, never a support library
   }' <<<"$pkg_target_rows"; }
 # Directories of those test targets (declared path, or Tests/<target>); Tests/<name>Tests when none is declared.
 test_dirs_for() { local rows; rows=$(test_target_rows_for "$1"); [[ -n "$rows" ]] || { echo "Tests/$1Tests"; return; }
@@ -244,8 +245,10 @@ check_component() { # name dir
   local tdirs; tdirs=$(test_dirs_for "$name")  # one per line
   local tdir; tdir=$(head -1 <<<"$tdirs")        # first (or the conventional default) — used for messages
   local test_rows; test_rows=$(test_target_rows_for "$name")
-  # --- build / tests: package targets from SwiftPM; app targets (Apps/*) from the simulator lane
-  if [[ "$dir" == Apps/* ]]; then
+  # --- build / tests: package targets from SwiftPM; app targets (Apps/*) from the simulator lane. A declared package
+  # target that lives under Apps/ is a package target, not an app.
+  local is_app=0; [[ "$dir" == Apps/* ]] && ! is_pkg_target_at "$name" "$dir" && is_app=1
+  if (( is_app )); then
     local sr; if [[ "$name" == "Shared" ]]; then
       # Shared: build outcome aggregated across schemes; package-suite failures stay on the lane (see Totals).
       case "$(shared_build_cell)" in
@@ -365,7 +368,7 @@ check_component() { # name dir
   else rcell="✅"; fi
   # --- DI posture: .shared / static var outside adapters and apps
   local dhits; dhits=$(grep -nE '\.shared\b|static var ' -r "$dir" --include='*.swift' 2>/dev/null | head -5)
-  if [[ "$layer" == "adapter" || "$dir" == Apps/* ]]; then dicell="—"  # adapters wrap Apple singletons; apps are composition roots
+  if [[ "$layer" == "adapter" ]] || (( is_app )); then dicell="—"  # adapters wrap Apple singletons; apps are composition roots
   elif [[ -n "$dhits" ]]; then dicell="❌"; status="RED"; findings+=("**$name** DI: $(tr '\n' ' ' <<<"$dhits")")
   else dicell="✅"; fi
   case "$status" in RED) red=$((red+1));; YELLOW) yellow=$((yellow+1));; *) green=$((green+1));; esac
@@ -382,7 +385,7 @@ while IFS="$US" read -r tname tpath ttype _; do  # name, path, type, c99name, de
   check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
 done <<<"$pkg_target_rows"
 for dir in Sources/*/; do dir=${dir%/}; [[ -d "$dir" ]] || continue; grep -qx -- "$dir" <<<"$seen_dirs" || check_component "$(basename "$dir")" "$dir"; done  # -d: unmatched glob
-for dir in Apps/*/; do [[ -d "$dir" ]] || continue; name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
+for dir in Apps/*/; do [[ -d "$dir" ]] || continue; name=$(basename "$dir"); grep -qx -- "Apps/$name" <<<"$seen_dirs" || check_component "$name" "Apps/$name"; done  # declared targets under Apps/ already have a row
 
 # Scheme-level test failures (app built, package suites failed on the simulator) are reported on the lane, not a row.
 lane_test_failures=0; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && ! sim_build_failed "$(raw_log "${sim_schemes[$i]}")" && lane_test_failures=$((lane_test_failures+1)); done
