@@ -329,6 +329,10 @@ check_component() { # name dir
   local tdirs; tdirs=$(test_dirs_for "$name")  # one per line
   local tdir; tdir=$(head -1 <<<"$tdirs")        # first (or the conventional default) — used for messages
   local test_rows; test_rows=$(test_target_rows_for "$name")
+  # The component's compiled-source manifest (declared package targets; SwiftPM `exclude`/`sources` honoured). An
+  # existing manifest is authoritative even when empty; without one, scans cover the directory.
+  local srclist=""; is_pkg_target_at "$name" "$dir" && srclist="$LOG/sources-$(safe_name "$name").list"
+  [[ -n "$srclist" && -f "$srclist" ]] || srclist=""
   # --- build / tests: package targets from SwiftPM; app targets (Apps/*) from the simulator lane. A declared package
   # target that lives under Apps/ is a package target, not an app.
   local is_app=0; [[ "$dir" == Apps/* ]] && ! is_pkg_target_at "$name" "$dir" && is_app=1
@@ -451,9 +455,6 @@ check_component() { # name dir
   ats_out=$(ats_enabled "$name" "$dir" 2>/dev/null); ats_status=$?
   # A declared package target is scanned over exactly the files it compiles (SwiftPM `exclude`/`sources` honoured);
   # anything else over its directory as a whole.
-  # An existing manifest is authoritative even when empty (a target compiling no Swift file scans nothing).
-  local srclist=""; is_pkg_target_at "$name" "$dir" && srclist="$LOG/sources-$(safe_name "$name").list"
-  [[ -n "$srclist" && -f "$srclist" ]] || srclist=""
   catch_out=$(empty_catches "$dir" "$srclist" 2>/dev/null); catch_status=$?
   # grep over the manifest's files (none when it is empty) or, without a manifest, over the directory.
   grep_sources() { # pattern
