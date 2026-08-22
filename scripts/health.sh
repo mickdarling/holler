@@ -33,12 +33,13 @@ pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'i
 for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
 pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
+target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_rows"; }  # literal name match
 # Is <dir> the declared source path of target <name>? (A stray Sources/<Name> next to a target declared at another path
 # is not the target: nothing in it is compiled or scanned.)
-is_pkg_target_at() { local row path; row=$(grep -E "^$1\|" <<<"$pkg_target_rows" | head -1); [[ -n "$row" ]] || return 1
+is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || return 1
   path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
 # The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
-test_dir_for() { local row; row=$(grep -E "^$1Tests\|" <<<"$pkg_target_rows" | head -1); local path; path=$(cut -d'|' -f2 <<<"$row"); echo "${path:-Tests/$1Tests}"; }
+test_dir_for() { local path; path=$(target_row "$1Tests" | cut -d'|' -f2); echo "${path:-Tests/$1Tests}"; }
 # Literal path-prefix match on a log (no regex: target paths may contain metacharacters).
 has_line_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1) { f = 1; exit } END { exit !f }' "$3"; }
 lines_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1)' "$3"; }
