@@ -117,4 +117,19 @@ struct PushToTalkGatedControlSpeakerTests {
         #expect(await eventually { await service.count(.speaker("Becca", channel)) == 2 })  // re-asserted
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a push-delivered speaker stays shown while the coordinator is still idle, until it reports a state")
+    func pushedSpeakerRetainedWhileIdle() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        let refreshes = await gate.refreshCount
+        let push = PushToTalkEvent.incomingSpeaker(channel, speaker: ParticipantID("c"), displayName: "Cass")
+        try await emitAndAwaitHandled(push, on: service, gate: gate)
+        try #require(await eventually { await gate.refreshCount > refreshes })
+        #expect(await service.speakerCalls.isEmpty)  // no setActiveSpeaker(nil): the pushed name is kept
+        inner.sendRoster([becca])
+        try await sendStateAndAwait(.receiving(from: becca.id), on: inner, gate: gate)  // coordinator catches up
+        #expect(await eventually { await service.count(.speaker("Becca", channel)) == 1 })
+        withExtendedLifetime(gate) {}
+    }
 }

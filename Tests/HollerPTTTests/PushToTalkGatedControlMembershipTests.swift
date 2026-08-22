@@ -66,8 +66,10 @@ struct PushToTalkGatedControlMembershipTests {
         let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
         try await emitAndAwaitHandled(.beginTransmittingRequested(channel), on: service, gate: gate)
         await service.setStopFailures(1)
-        try await sendStateAndAwait(.idle, on: inner, gate: gate)  // mirror's stopTransmitting throws
+        try await sendStateAndAwait(.idle, on: inner, gate: gate)  // mirror's stopTransmitting throws…
         #expect(await service.count(.stop(channel)) == 1)
+        try await sendStateAndAwait(.receiving(from: becca.id), on: inner, gate: gate)  // …so the latch re-arms and retries
+        #expect(await service.count(.stop(channel)) == 2)
         await service.setLeaveFailures(1)
         await gate.stop()  // leave throws: still a stopped gate
         #expect(await gate.isJoinedToSystemChannel == false)

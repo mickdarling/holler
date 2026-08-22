@@ -18,6 +18,9 @@ public actor PushToTalkGatedControl: TalkControlling {
     var roster: [Participant] = []
     var receivingFrom: ParticipantID?
     var activeSpeaker: String?
+    /// A speaker the system was told about through a push while the coordinator is still idle (no relay yet): shown
+    /// until the coordinator reports a real state, then the coordinator is authoritative.
+    var pushedSpeaker: String?
     /// Bumped whenever `activeSpeaker` is written outside the refresh worker (join, leave, stop, pushed speaker), so the
     /// worker can tell that the system's view changed while its call was in flight (value equality is not enough).
     var speakerEpoch = 0
@@ -107,6 +110,7 @@ public actor PushToTalkGatedControl: TalkControlling {
         stopRequested = false
         channelSession += 1
         activeSpeaker = nil  // invalidated before suspending; leaving clears the system UI
+        pushedSpeaker = nil
         speakerEpoch += 1
         await inner.release()
         guard wasMember else { return }

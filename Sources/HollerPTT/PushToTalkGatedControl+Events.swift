@@ -10,6 +10,7 @@ extension PushToTalkGatedControl {
             await handleTransmission(event)
         case let .incomingSpeaker(id, _, displayName) where id == channelID:
             activeSpeaker = displayName  // the adapter just told the system this name (push path)
+            pushedSpeaker = displayName  // keep showing it until the coordinator catches up (it may have no relay yet)
             speakerEpoch += 1
             refreshContinuation.yield()
         default: break
@@ -38,6 +39,7 @@ extension PushToTalkGatedControl {
         if accepted {
             rejoinAfterAnswer = false
             activeSpeaker = nil  // a fresh channel shows nobody
+            pushedSpeaker = nil
             speakerEpoch += 1
             refreshContinuation.yield()
         } else if pendingLeaves > 0 {
@@ -60,6 +62,7 @@ extension PushToTalkGatedControl {
         stopRequested = false
         channelSession += 1
         activeSpeaker = nil
+        pushedSpeaker = nil
         speakerEpoch += 1
         if systemTransmitting {  // the system transmission ended with the membership: the coordinator must not keep
             systemTransmitting = false  // capturing and holding the relay floor
@@ -106,22 +109,27 @@ extension PushToTalkGatedControl {
     func handle(notice: TalkNotice) async {
         guard case .denied = notice, systemTransmitting, joined, !stopRequested, transmitSession == channelSession
         else { return }
+        await requestSystemStop()
+    }
+
+    /// Ask the system to stop our transmission once; if the command cannot even be issued, re-arm so the next state or
+    /// notice asks again (no `.stopTransmitFailed` callback will come for a command that was never sent).
+    private func requestSystemStop() async {
         stopRequested = true
-        try? await service.stopTransmitting(channelID)
+        if (try? await service.stopTransmitting(channelID)) == nil { stopRequested = false }
     }
 
     /// Track the remote speaker; if the coordinator left the floor on its own (denied, disconnected) while the system
     /// still transmits for us, stop the system transmission once (the system would keep showing us talking).
     func mirror(_ state: TalkMachine.State) async {
         defer { handledStateCount += 1 }
-        if case let .receiving(speaker) = state { receivingFrom = speaker } else { receivingFrom = nil }
+        if case let .receiving(speaker) = state {
+            receivingFrom = speaker
+            pushedSpeaker = nil  // the coordinator is authoritative from here on
+        } else { receivingFrom = nil }
         switch state {
         case .transmitting, .requesting: break
-        case .idle, .receiving:
-            if systemTransmitting && joined && !stopRequested {
-                stopRequested = true
-                try? await service.stopTransmitting(channelID)
-            }
+        case .idle, .receiving: if systemTransmitting && joined && !stopRequested { await requestSystemStop() }
         }
         refreshContinuation.yield()
     }
@@ -138,6 +146,7 @@ extension PushToTalkGatedControl {
         defer { refreshCount += 1 }
         guard running, joined, !systemTransmitting else { return }
         let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
+            ?? pushedSpeaker
         guard name != activeSpeaker else { return }
         let session = channelSession, epoch = speakerEpoch
         let accepted = (try? await service.setActiveSpeaker(name, on: channelID)) != nil
