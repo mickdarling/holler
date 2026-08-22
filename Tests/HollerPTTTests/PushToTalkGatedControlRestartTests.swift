@@ -74,4 +74,42 @@ struct PushToTalkGatedControlRestartTests {
         #expect(await eventually { await service.count(.leave(channel)) == 2 })  // the surviving membership is left
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a drop during startup that the pending join itself repairs does not trigger a duplicate join")
+    func dropThenJoinedDuringStartupNoDuplicate() async throws {
+        let service = FakePushToTalkChannel()
+        let inner = RecordingTalkControl()
+        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
+        await service.setAutoJoinEvents(false)
+        await service.setHoldJoins(true)
+        let starting = Task { try await gate.start(channelName: "Kitchen") }
+        try #require(await eventually { await service.pendingJoins == 1 })
+        try await emitAndAwaitHandled(.left(channel, reason: .unknown), on: service, gate: gate)  // drop…
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // …then the pending join is accepted
+        await service.setHoldJoins(false)
+        await service.releaseJoins()
+        try await starting.value
+        #expect(await gate.isJoinedToSystemChannel)
+        try await emitAndAwaitHandled(.joined(ChannelID("other")), on: service, gate: gate)  // drain
+        #expect(await service.count(.join(channel, "Kitchen")) == 1)  // no duplicate join
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a terminal leave during a restart's startup is honored: the startup join is retired and not adopted")
+    func terminalLeaveDuringStartup() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoJoinEvents(false)
+        await service.setHoldJoins(true)
+        let restarting = Task { try await gate.start(channelName: "Kitchen") }  // old leave confirmed; join held
+        try #require(await eventually { await service.pendingJoins == 1 })
+        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // user left
+        await service.setHoldJoins(false)
+        await service.releaseJoins()
+        try await restarting.value
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the retired startup join accepted
+        #expect(await gate.isJoinedToSystemChannel == false)
+        #expect(await eventually { await service.count(.leave(channel)) == 2 })  // left again, not adopted
+        withExtendedLifetime(gate) {}
+    }
 }

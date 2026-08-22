@@ -100,7 +100,10 @@ public actor PushToTalkGatedControl: TalkControlling {
             throw error
         }
         running = true
-        if rejoinAfterStart { rejoinAfterStart = false; try? await issueJoin() }  // dropped during startup: join again
+        if rejoinAfterStart {  // dropped during startup and not re-established since: join again
+            rejoinAfterStart = false
+            if !joined && joinsOutstanding == 0 { try? await issueJoin() }
+        }
         refreshContinuation.yield()
     }
 

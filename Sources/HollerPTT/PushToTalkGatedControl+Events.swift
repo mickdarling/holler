@@ -44,6 +44,7 @@ extension PushToTalkGatedControl {
         }
         if accepted {
             rejoinAfterAnswer = false
+            rejoinAfterStart = false  // membership re-established by the pending join itself
             membershipSurvived = false
             activeSpeaker = nil  // a fresh channel shows nobody
             pushedSpeaker = nil
@@ -123,8 +124,9 @@ extension PushToTalkGatedControl {
             systemTransmitting = false  // capturing and holding the relay floor
             await inner.release()
         }
-        guard shouldRejoin else {  // a terminal leave: no rejoin, and a rejoin that is still unanswered is retired
-            if running { terminalLeave = true }
+        guard shouldRejoin else {  // a terminal leave: no rejoin, and a join that is still unanswered is retired
+            if running || starting { terminalLeave = true }  // also cancels a startup in progress: its join is retired
+            rejoinAfterStart = false
             staleJoins += joinsOutstanding
             joinsOutstanding = 0
             rejoinAfterAnswer = false
@@ -166,34 +168,5 @@ extension PushToTalkGatedControl {
         guard running, !joined else { return }
         guard joinsOutstanding == 0 else { rejoinAfterAnswer = true; return }  // a join is unanswered: retry after it
         try? await issueJoin()  // a refusal arrives as .joinFailed; nothing retries until the next start/leave
-    }
-
-    /// stop(), then wait (bounded) until the system has confirmed or refused every leave we issued — so a caller that
-    /// replaces this gate does not race its own next join against a membership that is still ending.
-    public func stopAndAwaitLeave(timeout: Duration = .seconds(3)) async {
-        await stop()
-        guard pendingLeaves > 0 || staleJoins > 0 else { return }  // a retired join may still be accepted → leave
-        let timer = Task { try? await Task.sleep(for: timeout); self.releaseLeaveWaiters() }
-        await withCheckedContinuation { leaveWaiters.append($0) }
-        timer.cancel()
-    }
-
-    /// Resume stopAndAwaitLeave callers once nothing about the old membership is still in flight.
-    func releaseLeaveWaitersIfSettled() { if pendingLeaves == 0 && staleJoins == 0 { releaseLeaveWaiters() } }
-
-    func releaseLeaveWaiters() {
-        let waiters = leaveWaiters
-        leaveWaiters.removeAll()
-        waiters.forEach { $0.resume() }
-    }
-
-    func issueJoin() async throws {
-        joinsOutstanding += 1
-        do {
-            try await service.join(Channel(id: channelID, name: channelName))
-        } catch {
-            joinsOutstanding -= 1
-            throw error
-        }
     }
 }
