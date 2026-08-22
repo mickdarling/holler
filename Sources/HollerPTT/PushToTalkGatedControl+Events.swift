@@ -71,7 +71,7 @@ extension PushToTalkGatedControl {
         if running || starting {
             if joinsOutstanding > 0 {
                 membershipSurvived = true
-            } else if pendingLeaves > 0 {
+            } else if leavePendingForCurrentMembership {
                 rejoinAfterLeave = true  // our own leave (issued after that join) ends it: join again once it confirms
             } else if !joined {
                 joined = true
@@ -79,7 +79,7 @@ extension PushToTalkGatedControl {
             }
         } else if endingSession {  // endSession() has not issued its leave yet: it will, for this membership
             membershipSurvived = true
-        } else if pendingLeaves == 0 {
+        } else if !leavePendingForCurrentMembership {  // no pending leave ends this membership: leave it now
             leaveAttempts = 0
             await issueLeave()
         } else {
@@ -103,6 +103,8 @@ extension PushToTalkGatedControl {
         if joined {  // a membership this session adopted from a refused earlier leave: our own later leave ended it
             joined = false
             stopRequested = false
+            beginRequested = false
+            releasePending = false
             channelSession += 1
             activeSpeaker = nil
             pushedSpeaker = nil
@@ -159,6 +161,8 @@ extension PushToTalkGatedControl {
         let held = joined && joinsOutstanding == 0  // joined implies no join outstanding; guarded regardless
         joined = false
         membershipSurvived = false  // whatever membership survived a refused leave, it has ended now
+        beginRequested = false
+        releasePending = false
         liveMembershipOver()
         stopRequested = false
         channelSession += 1

@@ -139,4 +139,20 @@ struct PushToTalkGatedControlRefusedLeaveTests {
         #expect(await eventually { await service.count(.leave(channel)) == 4 })
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a retired join accepted while an older leave is still unanswered is not covered by that leave")
+    func staleJoinNotCoveredByAnOlderLeave() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoJoinEvents(false)
+        await service.setAutoLeaveEvents(false)
+        await gate.stop()  // leave #1 for M1, unanswered
+        try await gate.start(channelName: "Kitchen")  // join #2, after leave #1, unanswered
+        await service.setLeaveFailures(1)
+        await gate.stop()  // join #2 retired; its cleanup leave cannot be issued (join #2 is ahead, nothing live)
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // #2 accepted: M2 exists, stopped
+        try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)  // leave #1
+        #expect(await eventually { await service.count(.leave(channel)) == 3 })  // M2 is left: no older leave ends it
+        withExtendedLifetime(gate) {}
+    }
 }

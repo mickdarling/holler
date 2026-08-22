@@ -12,6 +12,12 @@ extension PushToTalkGatedControl {
             transmitGeneration += 1
             stopRequested = false
             stopAttempts = 0
+            beginRequested = false
+            if releasePending {  // the finger is already up: stop the system, never press the coordinator
+                releasePending = false
+                await requestSystemStop()
+                return
+            }
             await inner.press()
             // the membership ended while the press was in flight
             if session != channelSession { await inner.release() }
@@ -20,10 +26,15 @@ extension PushToTalkGatedControl {
             stopRequested = false
             await inner.release()
             refreshContinuation.yield()  // speaker mirroring was deferred during the transmission
-        case let .beginTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession:
+        case let .beginTransmitFailed(id) where id == channelID && joined:
+            beginRequested = false  // no transmission will start; a release that was waiting for it is moot
+            releasePending = false
+            guard transmitSession == channelSession else { return }
             systemTransmitting = false
             await inner.release()  // the coordinator must not wait for a confirmation that will not come
             refreshContinuation.yield()
+        case let .stopTransmitFailed(id) where id == channelID && joined && beginRequested && !systemTransmitting:
+            releasePending = true  // the stop for a press the system has not confirmed was refused: stop at the begin
         case let .stopTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession
             && stopGeneration == transmitGeneration:  // a refusal answers the stop of the transmission it was asked for
             stopRequested = false

@@ -170,14 +170,24 @@ extension PushToTalkGatedControl {
     public var currentRoster: [Participant] { roster }
     /// Always through the system: the coordinator's state is only observed asynchronously here, so it cannot be used
     /// to pre-empt the request. If the coordinator then denies the floor, its notice makes the gate stop the system.
-    public func press() async { if joined { try? await service.requestBeginTransmitting(channelID) } }
+    public func press() async {
+        guard joined else { return }
+        releasePending = false  // a new press supersedes a release the begin had not caught up with
+        if (try? await service.requestBeginTransmitting(channelID)) != nil { beginRequested = true }
+    }
     /// If the stop command cannot even be issued, no end callback will come: free the coordinator ourselves (capture and
-    /// the relay floor must not outlive the press); the system transmission is retried by the next state/notice.
+    /// the relay floor must not outlive the press); the system transmission is retried by the next state/notice. A
+    /// release before the begin callback is remembered, so the begin, when it lands, is stopped rather than pressed.
     public func release() async {
         guard joined else { return }
         stopGeneration = transmitGeneration  // a refusal of this stop answers the current transmission
-        if (try? await service.stopTransmitting(channelID)) == nil, systemTransmitting { await inner.release() }
+        let sent = (try? await service.stopTransmitting(channelID)) != nil
+        if !sent {
+            if systemTransmitting { await inner.release() } else if beginRequested { releasePending = true }
+        }
     }
+    /// A pending leave that will end the membership currently held (not one issued for an earlier membership).
+    var leavePendingForCurrentMembership: Bool { pendingLeaveQueue.contains { $0.targetEpoch == membershipEpoch } }
     public nonisolated func subscribeStates() -> AsyncStream<TalkMachine.State> { inner.subscribeStates() }
     public nonisolated func subscribeNotices() -> AsyncStream<TalkNotice> { inner.subscribeNotices() }
     public nonisolated func subscribeRoster() -> AsyncStream<[Participant]> { inner.subscribeRoster() }

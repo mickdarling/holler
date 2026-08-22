@@ -66,6 +66,10 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// Bumped per system transmission; a stop refusal answers the stop of the transmission it was asked for.
     var transmitGeneration = 0
     var stopGeneration = 0
+    /// A press was sent to the system and its begin callback has not arrived yet.
+    var beginRequested = false
+    /// Released while the begin was unanswered and the stop was refused: the begin, when it lands, is stopped, not pressed.
+    var releasePending = false
     /// Joins ever issued: a join issued while a leave's command was still in flight reached the system first.
     var joinsIssued = 0
     /// Bumped whenever the system accepts one of our joins (a membership came into being), so a pending leave can tell
@@ -159,6 +163,8 @@ public actor PushToTalkGatedControl: TalkControlling {
         terminalLeave = false
         systemTransmitting = false
         stopRequested = false
+        beginRequested = false
+        releasePending = false
         channelSession += 1
         activeSpeaker = nil  // invalidated before suspending; leaving clears the system UI
         pushedSpeaker = nil
