@@ -34,6 +34,9 @@ public actor PushToTalkGatedControl: TalkControlling {
     var staleJoins = 0
     /// A system drop arrived while a rejoin was unanswered: rejoin again once that answer lands.
     var rejoinAfterAnswer = false
+    /// A system drop arrived while start() was still suspended in its join: rejoin once startup completes.
+    var rejoinAfterStart = false
+    var starting = false
     /// Leaves we issued whose `.left(.developerRequest)` confirmation is still outstanding.
     var pendingLeaves = 0
     /// How many times the current session end has asked the system to leave (a refused leave is retried, bounded).
@@ -81,9 +84,12 @@ public actor PushToTalkGatedControl: TalkControlling {
         self.channelName = channelName
         if pumps.isEmpty { startPumps() }  // before the first startup await: nothing from that window is replayed later
         if running { await endSession() }
+        starting = true
+        defer { starting = false }
         try await service.prepare()
         try await issueJoin()
         running = true
+        if rejoinAfterStart { rejoinAfterStart = false; try? await issueJoin() }  // dropped during startup: join again
         refreshContinuation.yield()
     }
 
@@ -129,6 +135,7 @@ public actor PushToTalkGatedControl: TalkControlling {
         joinsOutstanding = 0
         rejoinAfterLeave = false
         rejoinAfterAnswer = false
+        rejoinAfterStart = false
         membershipSurvived = false
         systemTransmitting = false
         stopRequested = false
@@ -143,10 +150,14 @@ public actor PushToTalkGatedControl: TalkControlling {
     }
 
     /// Ask the system to leave; the confirmation (`.left(.developerRequest)`) or refusal (`.leaveFailed`) comes later.
+    /// A command that cannot even be issued is a refusal too (the membership is unchanged).
     func issueLeave() async {
         leaveAttempts += 1
         pendingLeaves += 1  // before the call: its confirmation can be handled before the call returns
-        if (try? await service.leave(channelID)) == nil { pendingLeaves -= 1 }  // could not be issued: none will come
+        if (try? await service.leave(channelID)) == nil {
+            pendingLeaves -= 1
+            await leaveRefused()
+        }
     }
 
     private func startPumps() {

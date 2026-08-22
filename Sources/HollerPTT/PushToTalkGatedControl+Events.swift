@@ -68,6 +68,11 @@ extension PushToTalkGatedControl {
     /// (a restart superseded that session) → the membership is ours again, or a refused join is retried.
     private func ownLeaveRefused() async {
         pendingLeaves -= 1
+        await leaveRefused()
+    }
+
+    /// The system refused (or could not be asked) to end our membership: we are still a member.
+    func leaveRefused() async {
         if !running {
             if leaveAttempts < Self.maxLeaveAttempts {
                 await issueLeave()
@@ -96,7 +101,8 @@ extension PushToTalkGatedControl {
             systemTransmitting = false  // capturing and holding the relay floor
             await inner.release()
         }
-        if running && shouldRejoin { await rejoin() }
+        guard shouldRejoin else { return }
+        if running { await rejoin() } else if starting { rejoinAfterStart = true }  // startup still suspended: after it
     }
 
     private func handleTransmission(_ event: PushToTalkEvent) async {
