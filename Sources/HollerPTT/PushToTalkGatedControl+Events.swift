@@ -25,7 +25,7 @@ extension PushToTalkGatedControl {
             await joinAnswered(accepted: false)
         case let .left(id, .developerRequest) where id == channelID && pendingLeaves > 0: await ownLeaveSettled()
         case let .left(id, reason) where id == channelID: await membershipEnded(rejoin: reason.shouldRejoin)
-        case let .leaveFailed(id) where id == channelID && pendingLeaves > 0: await ownLeaveSettled()
+        case let .leaveFailed(id) where id == channelID && pendingLeaves > 0: await ownLeaveRefused()
         default: break
         }
     }
@@ -50,10 +50,25 @@ extension PushToTalkGatedControl {
         }
     }
 
-    /// Our own leave was confirmed (or refused, so no confirmation will come): the membership it ends is already over.
+    /// Our own leave was confirmed: the membership it ends is already over.
     private func ownLeaveSettled() async {
         pendingLeaves -= 1
         if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin() }
+    }
+
+    /// The system refused our leave: we are still a member. Stopped gate → retry the leave (bounded); running gate
+    /// (a restart superseded that session) → the membership is ours again, or a refused join is retried.
+    private func ownLeaveRefused() async {
+        pendingLeaves -= 1
+        if !running {
+            if leaveAttempts < Self.maxLeaveAttempts { await issueLeave() }
+            return
+        }
+        if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin(); return }
+        if !joined && joinsOutstanding == 0 {  // nothing answered or pending: the system still holds our membership
+            joined = true
+            refreshContinuation.yield()
+        }
     }
 
     /// The system ended our membership. Facts apply even while not running.

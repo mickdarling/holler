@@ -36,6 +36,9 @@ public actor PushToTalkGatedControl: TalkControlling {
     var rejoinAfterAnswer = false
     /// Leaves we issued whose `.left(.developerRequest)` confirmation is still outstanding.
     var pendingLeaves = 0
+    /// How many times the current session end has asked the system to leave (a refused leave is retried, bounded).
+    var leaveAttempts = 0
+    static let maxLeaveAttempts = 3
     /// A join was refused while our own leave was still in flight: retry once the leave is confirmed.
     var rejoinAfterLeave = false
     var systemTransmitting = false
@@ -114,6 +117,13 @@ public actor PushToTalkGatedControl: TalkControlling {
         speakerEpoch += 1
         await inner.release()
         guard wasMember else { return }
+        leaveAttempts = 0
+        await issueLeave()
+    }
+
+    /// Ask the system to leave; the confirmation (`.left(.developerRequest)`) or refusal (`.leaveFailed`) comes later.
+    func issueLeave() async {
+        leaveAttempts += 1
         pendingLeaves += 1  // before the call: its confirmation can be handled before the call returns
         if (try? await service.leave(channelID)) == nil { pendingLeaves -= 1 }  // could not be issued: none will come
     }

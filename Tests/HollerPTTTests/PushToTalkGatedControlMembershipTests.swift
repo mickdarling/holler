@@ -91,4 +91,28 @@ struct PushToTalkGatedControlMembershipTests {
         #expect(await inner.recorded.isEmpty)  // nothing reaches the coordinator without a system confirmation
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a leave the system refuses after stop() is retried (bounded); a refusal during a restart reconciles")
+    func refusedLeaveRetriedOrReconciled() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoLeaveEvents(false)
+        await gate.stop()  // leave #1 issued, unanswered
+        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)
+        #expect(await eventually { await service.count(.leave(channel)) == 2 })  // retried
+        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)
+        #expect(await eventually { await service.count(.leave(channel)) == 3 })
+        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)
+        #expect(await service.count(.leave(channel)) == 3)  // bounded: no fourth attempt
+        // restart path: the leave of the old session is refused after the new session joined → still a member
+        await service.setAutoLeaveEvents(true)
+        try await gate.start(channelName: "Kitchen")
+        try #require(await eventually { await gate.isJoinedToSystemChannel })
+        await service.setAutoLeaveEvents(false)
+        try await gate.start(channelName: "Kitchen")  // restart: leave (unanswered) + join (answered by .joined)
+        try #require(await eventually { await gate.isJoinedToSystemChannel })
+        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)  // old leave refused, late
+        #expect(await gate.isJoinedToSystemChannel)  // unchanged: the membership is ours
+        withExtendedLifetime(gate) {}
+    }
 }
