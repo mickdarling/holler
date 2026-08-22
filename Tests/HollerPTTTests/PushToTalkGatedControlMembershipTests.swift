@@ -41,6 +41,8 @@ struct PushToTalkGatedControlMembershipTests {
         // …deliver late
         try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)
         #expect(await gate.isJoinedToSystemChannel)
+        try await emitAndAwaitHandled(.joined(ChannelID("other")), on: service, gate: gate)  // drain
+        #expect(await service.count(.join(channel, "Kitchen")) == 2)  // the replacement membership is kept: no rejoin
         withExtendedLifetime(gate) {}
     }
 

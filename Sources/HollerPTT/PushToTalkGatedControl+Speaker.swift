@@ -17,6 +17,9 @@ extension PushToTalkGatedControl {
         /// Its membership is over (the system reported a leave of it before answering this one): a refusal now means
         /// nothing survived — nothing to reconcile to, nothing to retry.
         var invalidated = false
+        /// The membership (membershipEpoch) this leave ends: the one live when it was issued, or the one the last join
+        /// ahead of it created. Its confirmation ends the held membership only if that is still the current one.
+        var targetEpoch = 0
     }
 }
 
@@ -31,8 +34,17 @@ extension PushToTalkGatedControl {
         let id = nextLeaveID
         // Before the call: its confirmation can be handled before the call returns.
         pendingLeaveQueue.append(PendingLeave(id: id, joinsAhead: joinsOutstanding + staleJoins,
-                                              endedAhead: !liveMembership))
-        if (try? await service.leave(channelID)) == nil {
+                                              endedAhead: !liveMembership, targetEpoch: membershipEpoch))
+        let joinsMark = joinsIssued
+        let sent = (try? await service.leave(channelID)) != nil
+        // A join issued while the command was in flight (an event-pump leave holds no lifecycle lock) reached the
+        // system before it: the entry is re-measured as of now.
+        if joinsIssued > joinsMark, let idx = pendingLeaveQueue.firstIndex(where: { $0.id == id }) {
+            pendingLeaveQueue[idx].joinsAhead = joinsOutstanding + staleJoins
+            pendingLeaveQueue[idx].targetEpoch = membershipEpoch
+            if joined { pendingLeaveQueue[idx].endedAhead = false }
+        }
+        if !sent {
             // Never sent: the system owes no answer. Take our entry as it stands now (joins answered during the await
             // updated it); if an answer already consumed it, that answer settled it for us.
             guard let idx = pendingLeaveQueue.firstIndex(where: { $0.id == id }) else {
@@ -62,6 +74,7 @@ extension PushToTalkGatedControl {
             pendingLeaveQueue[idx].joinsAhead -= 1
             if accepted {
                 pendingLeaveQueue[idx].endedAhead = false
+                pendingLeaveQueue[idx].targetEpoch = membershipEpoch  // the membership that join just created
             } else if pendingLeaveQueue[idx].joinsAhead == 0 && pendingLeaveQueue[idx].endedAhead {
                 pendingLeaveQueue[idx].invalidated = true
             }
@@ -80,8 +93,10 @@ extension PushToTalkGatedControl {
 
     /// Ask the system to stop our transmission once; if the command cannot even be issued, re-arm so the next state or
     /// notice asks again (no `.stopTransmitFailed` callback will come for a command that was never sent).
-    private func requestSystemStop() async {
+    func requestSystemStop() async {
         stopRequested = true
+        stopAttempts += 1
+        stopGeneration = transmitGeneration
         if (try? await service.stopTransmitting(channelID)) == nil { stopRequested = false }
     }
 
@@ -141,6 +156,7 @@ extension PushToTalkGatedControl {
 
     func issueJoin() async throws {
         joinsOutstanding += 1
+        joinsIssued += 1
         do {
             try await service.join(Channel(id: channelID, name: channelName))
         } catch {  // never sent, no answer will come (one join in flight at most: callers hold the lifecycle lock)
@@ -159,6 +175,7 @@ extension PushToTalkGatedControl {
     /// the relay floor must not outlive the press); the system transmission is retried by the next state/notice.
     public func release() async {
         guard joined else { return }
+        stopGeneration = transmitGeneration  // a refusal of this stop answers the current transmission
         if (try? await service.stopTransmitting(channelID)) == nil, systemTransmitting { await inner.release() }
     }
     public nonisolated func subscribeStates() -> AsyncStream<TalkMachine.State> { inner.subscribeStates() }

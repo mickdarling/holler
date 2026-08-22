@@ -20,6 +20,7 @@ extension PushToTalkGatedControl {
     private func handleMembership(_ event: PushToTalkEvent) async {
         switch event {
         case let .joined(id) where id == channelID && (joinsOutstanding > 0 || staleJoins > 0):
+            membershipEpoch += 1  // a membership came into being, whichever join it answers
             joinAheadAnswered(accepted: true)
             await joinAnswered(accepted: true)
         case let .joinFailed(id) where id == channelID && (joinsOutstanding > 0 || staleJoins > 0):
@@ -89,7 +90,15 @@ extension PushToTalkGatedControl {
     /// Our own leave was confirmed: the membership it ends is over, whatever latch said it survived, and the leaves
     /// queued behind it learn that just as they do from any other end of the live membership.
     private func ownLeaveSettled() async {
-        pendingLeaveQueue.removeFirst()
+        let request = pendingLeaveQueue.removeFirst()
+        // The leave ended the membership it targeted. If a newer one has been created since (its join accepted after
+        // the leave was issued), the held membership is that newer one and untouched — including what the latches
+        // (membershipSurvived, carried by endSession across its coordinator release) say about it.
+        guard request.targetEpoch == membershipEpoch else {
+            releaseLeaveWaitersIfSettled()
+            if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin() }
+            return
+        }
         membershipSurvived = false
         if joined {  // a membership this session adopted from a refused earlier leave: our own later leave ended it
             joined = false

@@ -9,7 +9,9 @@ extension PushToTalkGatedControl {
             let session = channelSession
             systemTransmitting = true
             transmitSession = session
+            transmitGeneration += 1
             stopRequested = false
+            stopAttempts = 0
             await inner.press()
             // the membership ended while the press was in flight
             if session != channelSession { await inner.release() }
@@ -22,9 +24,13 @@ extension PushToTalkGatedControl {
             systemTransmitting = false
             await inner.release()  // the coordinator must not wait for a confirmation that will not come
             refreshContinuation.yield()
-        case let .stopTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession:
-            stopRequested = false  // the system did not accept our stop; the next state/notice asks again…
-            await inner.release()  // …but the coordinator must not keep capture and the floor meanwhile
+        case let .stopTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession
+            && stopGeneration == transmitGeneration:  // a refusal answers the stop of the transmission it was asked for
+            stopRequested = false
+            await inner.release()  // the coordinator must not keep capture and the floor meanwhile…
+            // …and the coordinator may already be idle (it reports state before the notice that asked for the stop),
+            // so nothing else would ask again: ask now, bounded.
+            if systemTransmitting && stopAttempts < Self.maxStopAttempts { await requestSystemStop() }
         default: break
         }
     }

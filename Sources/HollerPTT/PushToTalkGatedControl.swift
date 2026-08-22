@@ -60,6 +60,17 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// The membership (channelSession) a system transmission belongs to: end/failed callbacks from an earlier one are stale.
     var transmitSession = 0
     var stopRequested = false
+    /// System stops asked for the current transmission (a refused stop is asked again, bounded).
+    var stopAttempts = 0
+    static let maxStopAttempts = 3
+    /// Bumped per system transmission; a stop refusal answers the stop of the transmission it was asked for.
+    var transmitGeneration = 0
+    var stopGeneration = 0
+    /// Joins ever issued: a join issued while a leave's command was still in flight reached the system first.
+    var joinsIssued = 0
+    /// Bumped whenever the system accepts one of our joins (a membership came into being), so a pending leave can tell
+    /// whether the membership it ends is the one currently held or an earlier one.
+    var membershipEpoch = 0
     var channelSession = 0
     private var lifecycleBusy = false
     private var lifecycleWaiters: [CheckedContinuation<Void, Never>] = []

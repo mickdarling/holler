@@ -113,4 +113,40 @@ struct PushToTalkGatedControlReleaseWindowTests {
         #expect(await eventually { await service.count(.leave(channel)) == 2 })  // retried, not discarded
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a join issued while a retry leave's command is in flight counts as ahead of it")
+    func joinOvertakingInFlightLeaveCountsAsAhead() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoLeaveEvents(false)
+        await gate.stop()  // leave #1 for the confirmed membership
+        await service.setHoldLeaves(true)
+        service.emit(.leaveFailed(channel))  // refused → the retry leave #2 (issued on the event pump) parks in leave()
+        try #require(await eventually { await service.pendingLeaveCalls == 1 })
+        try await gate.start(channelName: "Kitchen")  // join #2 reaches the system first; its acceptance is queued
+        await service.setHoldLeaves(false)
+        await service.releaseLeaves()  // leave #2 now reaches the system, behind join #2: it ends that membership
+        try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)  // leave #2
+        #expect(await eventually { await service.count(.join(channel, "Kitchen")) == 3 })  // ended → rejoined
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("an older leave's confirmation landing while stop() releases the coordinator keeps the live membership")
+    func olderLeaveConfirmationDuringReleaseKeepsLiveMembership() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoLeaveEvents(false)
+        await gate.stop()  // leave #1 for M1, unanswered
+        try await gate.start(channelName: "Kitchen")  // join #2 accepted: M2 live
+        try #require(await eventually { await gate.isJoinedToSystemChannel })
+        await inner.setHoldReleases(true)
+        let stopping = Task { await gate.stop() }  // parks in inner.release(); M2's liveness is carried in state
+        try #require(await eventually { await inner.pendingReleases == 1 })
+        try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)  // leave #1
+        await inner.setHoldReleases(false)
+        await inner.releaseAll()
+        await stopping.value
+        #expect(await eventually { await service.count(.leave(channel)) == 2 })  // M2 is left
+        withExtendedLifetime(gate) {}
+    }
 }
