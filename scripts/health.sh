@@ -42,14 +42,15 @@ target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_row
 # is not the target: nothing in it is compiled or scanned.)
 is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || return 1
   path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
-# Every test target of component <name>, one row per line (empty when it has none): <name>Tests; any test target
-# named <name>… that depends on <name> (FooIntegrationTests, FooSpecs); and any test target that depends on <name> and
-# is not claimed by another dependency's name (IntegrationSpecs depending on Foo) — such a target counts for each of
-# its unclaimed production dependencies. A *TestSupport library is claimed only by an exact <name>Tests: every test
-# target depends on it, so dependency alone would attach every suite to it.
+# Every test target of component <name>, one row per line (empty when it has none). Each must depend on <name> (a
+# suite that cannot import the component does not test it): <name>Tests; any test target named <name>…
+# (FooIntegrationTests, FooSpecs); and any test target not claimed by another dependency's name (IntegrationSpecs
+# depending on Foo) — such a target counts for each of its unclaimed production dependencies. A *TestSupport library
+# is claimed only by an exact <name>Tests: every test target depends on it, so dependency alone would attach every suite.
 test_target_rows_for() { awk -F'|' -v n="$1" '$3 == "test" {
+    if (index("," $5 ",", "," n ",") == 0) next
     if ($1 == n "Tests") { print; next }
-    if (n ~ /TestSupport$/ || index("," $5 ",", "," n ",") == 0) next
+    if (n ~ /TestSupport$/) next
     if (index($1, n) == 1) { print; next }
     split($5, d, ","); claimed = 0
     for (i in d) if (d[i] != "" && d[i] != n && index($1, d[i]) == 1) claimed = 1
@@ -84,6 +85,7 @@ for i, line in enumerate(text.splitlines()):
         names += [x.strip().strip("'\"") for x in inside.split(",") if x.strip()]
     else:                                          # block form: "- A" / "- 'B'" lines that follow
         for follower in text.splitlines()[i + 1:]:
+            if re.match(r"^\s*(#.*)?$", follower): continue   # blank or comment-only lines are part of the sequence
             b = re.match(r"^\s+-\s*(.+?)\s*(#.*)?$", follower)
             if not b: break
             names.append(b.group(1).strip().strip("'\""))
