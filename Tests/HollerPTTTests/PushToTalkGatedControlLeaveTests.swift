@@ -126,4 +126,22 @@ struct PushToTalkGatedControlLeaveTests {
         await stopping.value  // only now settled
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a retired join accepted while endSession() is still releasing the coordinator does not add a second leave")
+    func staleJoinDuringEndSessionLeavesOnce() async throws {
+        let service = FakePushToTalkChannel()
+        let inner = RecordingTalkControl()
+        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
+        await service.setAutoJoinEvents(false)
+        try await gate.start(channelName: "Kitchen")  // join unanswered
+        await inner.setHoldReleases(true)
+        let stopping = Task { await gate.stop() }  // retires the join, then suspends in inner.release()
+        try #require(await eventually { await inner.pendingReleases == 1 })
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the retired join is accepted now
+        #expect(await service.count(.leave(channel)) == 0)  // endSession will issue the leave itself
+        await inner.releaseAll()
+        await stopping.value
+        #expect(await service.count(.leave(channel)) == 1)
+        withExtendedLifetime(gate) {}
+    }
 }

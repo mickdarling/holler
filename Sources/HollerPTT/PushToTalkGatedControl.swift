@@ -37,6 +37,8 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// A system drop arrived while start() was still suspended in its join: rejoin once startup completes.
     var rejoinAfterStart = false
     var starting = false
+    /// endSession() is between retiring the session and issuing its leave (it awaits the coordinator first).
+    var endingSession = false
     /// Leaves we issued whose `.left(.developerRequest)` confirmation is still outstanding.
     var pendingLeaves = 0
     /// How many times the current session end has asked the system to leave (a refused leave is retried, bounded).
@@ -47,7 +49,7 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// Our leave was refused while a restart's join was still unanswered: if that join is refused too, we are still a
     /// member of the old channel and the gate reconciles to joined.
     var membershipSurvived = false
-    private var leaveWaiters: [CheckedContinuation<Void, Never>] = []
+    var leaveWaiters: [CheckedContinuation<Void, Never>] = []
     var systemTransmitting = false
     /// The membership (channelSession) a system transmission belongs to: end/failed callbacks from an earlier one are stale.
     var transmitSession = 0
@@ -101,37 +103,10 @@ public actor PushToTalkGatedControl: TalkControlling {
         await endSession()
     }
 
-    /// stop(), then wait (bounded) until the system has confirmed or refused every leave we issued — so a caller that
-    /// replaces this gate does not race its own next join against a membership that is still ending.
-    public func stopAndAwaitLeave(timeout: Duration = .seconds(3)) async {
-        await stop()
-        guard pendingLeaves > 0 || staleJoins > 0 else { return }  // a retired join may still be accepted → leave
-        let timer = Task { try? await Task.sleep(for: timeout); self.releaseLeaveWaiters() }
-        await withCheckedContinuation { leaveWaiters.append($0) }
-        timer.cancel()
-    }
-
-    /// Resume stopAndAwaitLeave callers once nothing about the old membership is still in flight.
-    func releaseLeaveWaitersIfSettled() { if pendingLeaves == 0 && staleJoins == 0 { releaseLeaveWaiters() } }
-
-    func releaseLeaveWaiters() {
-        let waiters = leaveWaiters
-        leaveWaiters.removeAll()
-        waiters.forEach { $0.resume() }
-    }
-
-    func issueJoin() async throws {
-        joinsOutstanding += 1
-        do {
-            try await service.join(Channel(id: channelID, name: channelName))
-        } catch {
-            joinsOutstanding -= 1
-            throw error
-        }
-    }
-
     func endSession() async {
         let wasMember = joined || joinsOutstanding > 0
+        endingSession = true
+        defer { endingSession = false }
         running = false
         joined = false
         staleJoins += joinsOutstanding  // answers to this session's joins must not re-arm the stopped gate
