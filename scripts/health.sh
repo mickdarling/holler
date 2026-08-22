@@ -42,7 +42,11 @@ def safe(name):  # readable prefix + hash: bounded length, injective, same as sa
     return enc[:48] + "-" + hashlib.sha256(name.encode()).hexdigest()[:16]
 for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]):
     deps = "\x1e".join(t.get("target_dependencies", []))
-    print("\x1f".join([t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps]))
+    fields = [t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps]
+    # Records are newline-delimited; a newline inside a field (SwiftPM accepts such names) is replaced by U+2424 and
+    # the record flagged, so the reader reports that target as unsupported instead of reading a torn record.
+    flag = "newline" if any("\n" in f for f in fields) else ""
+    print("\x1f".join([f.replace("\n", "\u2424") for f in fields] + [flag]))
     base = t.get("path") or ("Tests/" + t["name"] if t.get("type") == "test" else "Sources/" + t["name"])
     with open(os.path.join(log_dir, "sources-" + safe(t["name"]) + ".list"), "w") as f:
         f.write("".join(base.rstrip("/") + "/" + src + "\n" for src in t.get("sources", []) if src.endswith(".swift")))' "$LOG" 2>/dev/null)
@@ -311,6 +315,13 @@ print(enc[:48] + "-" + hashlib.sha256(name.encode()).hexdigest()[:16], end="")' 
 # The component's layer from the module graph: the key is matched literally (a name may contain regex metacharacters).
 layer_of() { awk -v n="$1" '/^ +[^ ]/ { l = $0; sub(/^ +/, "", l); if (index(l, n ":") == 1) { print; exit } }' docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
+# A component this report cannot check at all: every cell unverified, counted YELLOW, with the reason.
+unsupported_row() { # name reason
+  local mdname=${1//|/\\|}
+  rows+=("| $mdname | unknown | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | YELLOW |"); yellow=$((yellow+1))
+  findings+=("**$1** unverified: $2")
+}
+
 check_component() { # name dir
   local name="$1" dir="$2" status="GREEN"
   local layer; layer=$(layer_of "$name"); layer=${layer:-unknown}
@@ -393,8 +404,8 @@ check_component() { # name dir
     fi
     if (( periphery_status != 0 )); then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
     elif ! is_periphery_scanned "$name"; then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-      (( periphery_exclusions_unknown )) && findings+=("**$name** dead code unverified: .periphery.yml uses YAML features the fallback parser cannot resolve (install PyYAML)")
-      findings+=("**$name** dead code unverified: target is in .periphery.yml exclude_targets")
+      if (( periphery_exclusions_unknown )); then findings+=("**$name** dead code unverified: .periphery.yml uses YAML features the fallback parser cannot resolve (install PyYAML)")
+      else findings+=("**$name** dead code unverified: target is in .periphery.yml exclude_targets"); fi
     elif grep -qF -- "$ROOT/$dir/" "$LOG/periphery.log"; then dcell="⚠️"; [[ $status == GREEN ]] && status="YELLOW"
       findings+=("**$name** dead code: $(grep -F -- "$ROOT/$dir/" "$LOG/periphery.log" | head -3 | strip_root | tr '\n' ' ')")
     else dcell="✅"; fi
@@ -464,14 +475,17 @@ check_component() { # name dir
 # Package rows come from the declared targets (any path), so a target outside Sources/ is not silently omitted;
 # Sources/* directories that are not targets get a row too (rendered unverified) so stray code is visible.
 seen_dirs=""
-while IFS="$US" read -r tname tpath ttype _; do  # name, path, type, c99name, deps
+while IFS="$US" read -r tname tpath ttype _ _ tflag; do  # name, path, type, c99name, deps, flag
   [[ -z "$tname" || "$ttype" == "test" ]] && continue
+  if [[ "$tflag" == "newline" ]]; then unsupported_row "$tname" "target name or path contains a newline: not supported by this report"; continue; fi
   [[ -z "$tpath" ]] && tpath="Sources/$tname"
   check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
 done <<<"$pkg_target_rows"
 # A directory that is a declared target path, or an ancestor of one (the container of a nested custom path), is not a
 # stray component.
-claimed_dir() { grep -qx -- "$1" <<<"$seen_dirs" || awk -v d="$1/" 'index($0, d) == 1 { f = 1; exit } END { exit !f }' <<<"$seen_dirs"; }
+# …or a directory beneath a broader target root that holds that target's compiled sources (the manifests say so).
+claimed_dir() { grep -qx -- "$1" <<<"$seen_dirs" || awk -v d="$1/" 'index($0, d) == 1 { f = 1; exit } END { exit !f }' <<<"$seen_dirs" \
+  || cat "$LOG"/sources-*.list 2>/dev/null | awk -v d="$1/" 'index($0, d) == 1 { f = 1; exit } END { exit !f }'; }
 for dir in Sources/*/; do dir=${dir%/}; [[ -d "$dir" ]] || continue; claimed_dir "$dir" || check_component "$(basename "$dir")" "$dir"; done  # -d: unmatched glob
 for dir in Apps/*/; do [[ -d "$dir" ]] || continue; name=$(basename "$dir"); claimed_dir "Apps/$name" || check_component "$name" "Apps/$name"; done
 
