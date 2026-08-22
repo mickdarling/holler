@@ -28,6 +28,7 @@ let package = Package(
         .testTarget(name: "HollerTransportTests", dependencies: ["HollerTransport", "HollerCoreTestSupport"], swiftSettings: strict),
         .target(name: "HollerAudio", dependencies: ["HollerCore"], swiftSettings: strict),
         .target(name: "HollerPTT", dependencies: ["HollerCore"], swiftSettings: strict),
+        .testTarget(name: "HollerPTTTests", dependencies: ["HollerPTT", "HollerCoreTestSupport"], swiftSettings: strict),
 
         // Features: SwiftUI + view models, depend on Core protocols only.
         .target(name: "HollerFeatures", dependencies: ["HollerCore"], swiftSettings: strict),
