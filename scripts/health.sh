@@ -228,6 +228,9 @@ sim_build_failure_scope() { # raw-log [component-dir]
   elif grep -qE "^Tests/" <<<"$rel"; then echo tests
   elif grep -qE "^Apps/" <<<"$rel"; then echo other-app
   else echo unknown; fi; }
+# The raw xcodebuild stream ends in TEST SUCCEEDED and carries no failure marker: xcodebuild itself passed, whatever
+# the wrapper (xcbeautify, verify.sh) did afterwards.
+sim_raw_succeeded() { [[ -f "$1" ]] && grep -q '\*\* TEST SUCCEEDED \*\*' "$1" && ! grep -qE '\*\* (TEST|BUILD) FAILED \*\*' "$1" && ! sim_build_failed "$1"; }
 while IFS='|' read -r scheme _ _; do
   [[ -z "$scheme" || "$scheme" == \#* ]] && continue
   sim_schemes+=("$scheme")
@@ -241,9 +244,6 @@ while IFS='|' read -r scheme _ _; do
   else sim_results+=(1); fi
 done < scripts/app-schemes.txt
 (( ${#sim_schemes[@]} == 0 )) && echo "warning: no schemes read from scripts/app-schemes.txt; app rows are unverified" >&2
-# The raw xcodebuild stream ends in TEST SUCCEEDED and carries no failure marker: xcodebuild itself passed, whatever
-# the wrapper (xcbeautify, verify.sh) did afterwards.
-sim_raw_succeeded() { [[ -f "$1" ]] && grep -q '\*\* TEST SUCCEEDED \*\*' "$1" && ! grep -qE '\*\* (TEST|BUILD) FAILED \*\*' "$1" && ! sim_build_failed "$1"; }
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
 # Shared app code compiles into every scheme, so its Build cell aggregates every scheme's BUILD outcome (not the
 # scheme's test outcome): any app/dependency build failure → ❌; any lane that did not prove a build (environment
