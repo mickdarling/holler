@@ -23,37 +23,47 @@ public final class PushToTalkChannelAdapter: NSObject, PTChannelManagerDelegate,
         super.init()
     }
 
+    /// Instantiates the PTChannelManager once per adapter; later calls are no-ops. The composition root keeps one adapter
+    /// per session and stops the previous gate before building a new one, so the delegate moves with it.
     public func prepare() async throws {
+        guard manager == nil else { return }
         manager = try await PTChannelManager.channelManager(delegate: self, restorationDelegate: self)
     }
 
     public func join(_ channel: Channel) async throws {
+        let manager = try preparedManager()
         let uuid = channelUUIDs[channel.id] ?? UUID()
         channelUUIDs[channel.id] = uuid
         channelIDs.withLock { $0[uuid] = channel.id }
         let descriptor = PTChannelDescriptor(name: channel.name, image: nil)
-        manager?.requestJoinChannel(channelUUID: uuid, descriptor: descriptor)
+        manager.requestJoinChannel(channelUUID: uuid, descriptor: descriptor)  // outcome: .joined / .joinFailed
     }
 
     public func leave(_ channel: ChannelID) async throws {
-        guard let uuid = channelUUIDs[channel] else { return }
-        manager?.leaveChannel(channelUUID: uuid)
+        try preparedManager().leaveChannel(channelUUID: try uuid(for: channel))
     }
 
     public func requestBeginTransmitting(_ channel: ChannelID) async throws {
-        guard let uuid = channelUUIDs[channel] else { return }
-        manager?.requestBeginTransmitting(channelUUID: uuid)
+        try preparedManager().requestBeginTransmitting(channelUUID: try uuid(for: channel))  // outcome via delegate
     }
 
     public func stopTransmitting(_ channel: ChannelID) async throws {
-        guard let uuid = channelUUIDs[channel] else { return }
-        manager?.stopTransmitting(channelUUID: uuid)
+        try preparedManager().stopTransmitting(channelUUID: try uuid(for: channel))
     }
 
     public func setActiveSpeaker(_ name: String?, on channel: ChannelID) async throws {
-        guard let uuid = channelUUIDs[channel] else { return }
         let participant = name.map { PTParticipant(name: $0, image: nil) }
-        try await manager?.setActiveRemoteParticipant(participant, channelUUID: uuid)
+        try await preparedManager().setActiveRemoteParticipant(participant, channelUUID: try uuid(for: channel))
+    }
+
+    private func preparedManager() throws -> PTChannelManager {
+        guard let manager else { throw PushToTalkServiceError.notPrepared }
+        return manager
+    }
+
+    private func uuid(for channel: ChannelID) throws -> UUID {
+        guard let uuid = channelUUIDs[channel] else { throw PushToTalkServiceError.unknownChannel }
+        return uuid
     }
 
     // MARK: PTChannelManagerDelegate (nonisolated; forward to the stream)
@@ -87,11 +97,37 @@ public final class PushToTalkChannelAdapter: NSObject, PTChannelManagerDelegate,
     }
 
     public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, failedToJoinChannel channelUUID: UUID, error: any Error
+    ) {
+        continuation.yield(.joinFailed(channelID(for: channelUUID)))
+    }
+
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, failedToLeaveChannel channelUUID: UUID, error: any Error
+    ) {
+        continuation.yield(.leaveFailed(channelID(for: channelUUID)))
+    }
+
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, failedToBeginTransmittingInChannel channelUUID: UUID, error: any Error
+    ) {
+        continuation.yield(.beginTransmitFailed(channelID(for: channelUUID)))
+    }
+
+    public nonisolated func channelManager(
+        _ channelManager: PTChannelManager, failedToStopTransmittingInChannel channelUUID: UUID, error: any Error
+    ) {
+        continuation.yield(.stopTransmitFailed(channelID(for: channelUUID)))
+    }
+
+    public nonisolated func channelManager(
         _ channelManager: PTChannelManager, receivedEphemeralPushToken pushToken: Data
     ) {
         continuation.yield(.pushTokenUpdated(pushToken))
     }
 
+    /// PTPushResult offers only "show this remote participant" or "leave the channel"; a payload without a speaker
+    /// cannot be shown, so the channel is left (the relay owns the payload shape — see ADR-0005 follow-ups).
     public nonisolated func incomingPushResult(
         channelManager: PTChannelManager, channelUUID: UUID, pushPayload: [String: Any]
     ) -> PTPushResult {

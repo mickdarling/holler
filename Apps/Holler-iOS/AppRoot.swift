@@ -14,7 +14,19 @@ final class AppRoot {
     private var services: SessionServices?
     private var gate: PushToTalkGatedControl?
 
+    private var starting = false
+
     func start(displayName: String) async {
+        guard !starting else { return }  // a second start while one is in flight would orphan a joined gate
+        starting = true
+        defer { starting = false }
+        // Restart: clear the fields before suspending (a re-entrant start must not see the old gate), then tear down.
+        var previousGate = gate, previousServices = services
+        gate = nil; services = nil; viewModel = nil
+        await previousGate?.stop()
+        await previousServices?.stop()
+        // released before a new adapter is built: one PTChannelManager at a time
+        previousGate = nil; previousServices = nil
         do {
             let configuration = try SessionServices.loadConfiguration(displayName: displayName)
             let services = SessionServices(configuration: configuration)
