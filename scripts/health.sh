@@ -73,7 +73,7 @@ sim_env_excerpt() { local i scheme="$1" e; if [[ "$1" == "Shared" ]]; then for i
 # Markers, or — if the stream was cut before them — compiler diagnostics with no test session having started.
 sim_build_failed() { [[ -f "$1" ]] || return 1
   grep -qE "Testing cancelled because the build failed|The following build commands failed|\*\* BUILD FAILED \*\*" "$1" \
-  || { grep -qE "^[^ ]*\.swift:[0-9]+:[0-9]+: error:" "$1" && ! grep -qE "Test run started|Test Suite '(All tests|Selected tests)' started" "$1"; }; }
+  || { grep -qE "^[^:]*\.swift:[0-9]+:[0-9]+: error:" "$1" && ! grep -qE "Test run started|Test Suite '(All tests|Selected tests)' started" "$1"; }; }
 # Did the lane reach xcodebuild at all? Only xcodebuild's own output counts (the wrapper prints "-- <scheme> on
 # <destination>" before calling it; a failure before xcodebuild — xcodegen, destination resolution — is not a build result).
 sim_ran_xcodebuild() { [[ -f "$1" ]] || return 1
