@@ -232,6 +232,8 @@ for f in pathlib.Path(sys.argv[1]).rglob("*.swift"):
 PYX
 }
 
+# A filesystem-safe form of a target name for evidence-log filenames (a name may contain `/` or other special characters).
+safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 # The component's layer from the module graph: the key is matched literally (a name may contain regex metacharacters).
 layer_of() { awk -v n="$1" '/^ +[^ ]/ { l = $0; sub(/^ +/, "", l); if (index(l, n ":") == 1) { print; exit } }' docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
@@ -295,7 +297,7 @@ check_component() { # name dir
       tcell="✅"
       while IFS= read -r trow; do
         tname_=$(cut -d"$US" -f1 <<<"$trow"); tdir_=$(cut -d"$US" -f2 <<<"$trow"); tdir_=${tdir_:-Tests/$tname_}
-        local tlog; tlog="$LOG/test-$(printf '%s' "$tname_" | tr -c 'A-Za-z0-9._-' '_').log"  # filesystem-safe evidence name
+        local tlog; tlog="$LOG/test-$(safe_name "$tname_").log"
         if has_error_under "$ROOT/$tdir_/" "$LOG/build.log"; then tc="❌"; status="RED"
           findings+=("**$name** test target $tname_ failed to compile: $(grep -F -- "$ROOT/$tdir_/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
         elif (( build_all != 0 )); then tc="❓"; [[ $status == GREEN ]] && status="YELLOW"
@@ -322,7 +324,7 @@ check_component() { # name dir
   fi
   # --- lint
   local lint_paths=("$dir") td; while IFS= read -r td; do [[ -d "$td" ]] && lint_paths+=("$td"); done <<<"$tdirs"
-  local lint_log="$LOG/lint-$name.log" lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
+  local lint_log="$LOG/lint-$(safe_name "$name").log" lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
   swiftlint lint --strict --quiet "${lint_paths[@]}" >"$lint_log" 2>&1; lint_status=$?
   if (( lint_status == 0 )); then lcell="✅"
   elif grep -qE "$lint_diag_re" "$lint_log"; then lcell="❌"; status="RED"
