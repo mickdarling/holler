@@ -10,7 +10,7 @@ ROOT=$PWD
 LOG=$(mktemp -d "${TMPDIR:-/tmp}/holler-health.XXXXXX") || exit 1  # per-run evidence; concurrent runs never share logs
 if [[ "${HOLLER_HEALTH_KEEP_LOGS:-0}" == "1" ]]; then echo "evidence logs: $LOG" >&2; else trap 'rm -rf "$LOG"' EXIT; fi
 strip_ansi() { sed $'s/\033\[[0-9;]*m//g'; }
-strip_root() { local l; while IFS= read -r l; do printf '%s\n' "${l//"$ROOT/"/}"; done; }  # literal, not a regex
+strip_root() { awk -v r="$ROOT/" '{ i = index($0, r); if (i) $0 = substr($0, 1, i - 1) substr($0, i + length(r)); print }'; }  # literal
 # Same local fallback as scripts/verify.sh: when xcode-select points at CommandLineTools, the Swift Testing frameworks
 # live in Xcode, so select it and pass the framework search paths to swift build/test. CI selects Xcode explicitly.
 SWIFT_FLAGS=()
