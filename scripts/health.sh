@@ -76,8 +76,8 @@ import re, json, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
 def tokenize(s, sep=None, stop=None):
     # Walk s with YAML quoting rules: inside "…" a backslash escapes the next character; inside '…' a doubled ''
-    # is a literal quote. Outside quotes: '#' starts a comment (rest dropped), `sep` splits, `stop` ends the walk.
-    # Returns (parts, index_of_stop or -1); parts keep their quotes for unquote().
+    # is a literal quote. Outside quotes: '#' starts a comment that runs to the end of that physical line, `sep`
+    # splits, `stop` ends the walk. Returns (parts, index_of_stop or -1); parts keep their quotes for unquote().
     parts, cur, q, i = [], [], None, 0
     while i < len(s):
         ch = s[i]
@@ -91,7 +91,10 @@ def tokenize(s, sep=None, stop=None):
                 if i + 1 < len(s) and s[i + 1] == "'": cur.append("'"); i += 2; continue
                 q = None
         elif ch in "'\"": q = ch; cur.append(ch)
-        elif ch == "#": break
+        elif ch == "#":
+            nl = s.find("\n", i)
+            if nl < 0: break
+            i = nl; continue                        # the newline itself is kept as whitespace
         elif stop and ch == stop: parts.append("".join(cur)); return parts, i
         elif sep and ch == sep: parts.append("".join(cur)); cur = []
         else: cur.append(ch)
@@ -115,7 +118,7 @@ for i, line in enumerate(lines):
         buf, j = rest[1:], i + 1
         parts, close = tokenize(buf, sep=",", stop="]")
         while close < 0 and j < len(lines):
-            buf += " " + lines[j]; j += 1
+            buf += "\n" + lines[j]; j += 1         # physical lines kept apart: a comment ends at its own line
             parts, close = tokenize(buf, sep=",", stop="]")
         names += [unquote(x) for x in parts if x.strip()]
     elif rest:                                     # a single scalar: exclude_targets: Foo
@@ -229,7 +232,8 @@ for f in pathlib.Path(sys.argv[1]).rglob("*.swift"):
 PYX
 }
 
-layer_of() { grep -E "^ +$1:" docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
+# The component's layer from the module graph: the key is matched literally (a name may contain regex metacharacters).
+layer_of() { awk -v n="$1" '/^ +[^ ]/ { l = $0; sub(/^ +/, "", l); if (index(l, n ":") == 1) { print; exit } }' docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
 check_component() { # name dir
   local name="$1" dir="$2" status="GREEN"
