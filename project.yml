@@ -97,6 +97,7 @@ schemes:
         - package: Holler/HollerCoreTests
         - package: Holler/HollerTransportTests
         - package: Holler/HollerFeaturesTests
+        - package: Holler/HollerPTTTests
   Holler-watchOS:
     build:
       targets: { Holler-watchOS: all }
