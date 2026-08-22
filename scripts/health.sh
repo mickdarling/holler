@@ -28,7 +28,10 @@ mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 # Whole-package passes once; per-component attribution by path. Tool failures are recorded, not swallowed.
 swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log" 2>&1; build_all=$?
 # Declared SwiftPM targets: a Sources/<name> directory that is not a target is never compiled, so its row is unverified.
-pkg_targets=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys; print("\n".join(t["name"] for t in json.load(sys.stdin)["targets"]))' 2>/dev/null)
+# name|path|type per declared target (path is relative to the package root; custom paths are honoured).
+pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys
+for t in json.load(sys.stdin)["targets"]: print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
+pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 pkg_targets_known() { [[ -n "$pkg_targets" ]]; }  # empty = `swift package describe` failed: say so, do not blame Package.swift
 periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
@@ -271,7 +274,15 @@ check_component() { # name dir
   rows+=("| $name | $layer | $bcell | $tcell | $lcell | $dcell | $bocell | $szcell | $rcell | $dicell | $status |")
 }
 
-for dir in Sources/*/; do name=$(basename "$dir"); check_component "$name" "Sources/$name"; done
+# Package rows come from the declared targets (any path), so a target outside Sources/ is not silently omitted;
+# Sources/* directories that are not targets get a row too (rendered unverified) so stray code is visible.
+seen_dirs=""
+while IFS='|' read -r tname tpath ttype; do
+  [[ -z "$tname" || "$ttype" == "test" ]] && continue
+  [[ -z "$tpath" ]] && tpath="Sources/$tname"
+  check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
+done <<<"$pkg_target_rows"
+for dir in Sources/*/; do dir=${dir%/}; grep -qx -- "$dir" <<<"$seen_dirs" || check_component "$(basename "$dir")" "$dir"; done
 for dir in Apps/*/; do name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
 
 # Scheme-level test failures (app built, package suites failed on the simulator) are reported on the lane, not a row.
