@@ -170,9 +170,13 @@ extension PushToTalkGatedControl {
     public var currentRoster: [Participant] { roster }
     /// Always through the system: the coordinator's state is only observed asynchronously here, so it cannot be used
     /// to pre-empt the request. If the coordinator then denies the floor, its notice makes the gate stop the system.
+    /// One begin is outstanding at most: a press while the system has not answered the last one only supersedes a
+    /// release (the begin, when it lands, is pressed) — a second request would be refused as in progress, and that
+    /// refusal cannot be told apart from one for the live transmission.
     public func press() async {
         guard joined else { return }
         releasePending = false  // a new press supersedes a release the begin had not caught up with
+        guard !beginRequested else { return }
         if (try? await service.requestBeginTransmitting(channelID)) != nil { beginRequested = true }
     }
     /// If the stop command cannot even be issued, no end callback will come: free the coordinator ourselves (capture and
