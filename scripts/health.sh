@@ -438,7 +438,9 @@ check_component() { # name dir
   local sz=0 n
   if [[ ! -d "$dir" ]]; then szcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** size unverified: $dir is not a directory")
   else
-    while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 200 )) && { sz=1; findings+=("**$name** oversized: $f ($n lines > 200)"); }; done < <(find "$dir" -name '*.swift')
+    # Package targets: the compiled-source manifest (SwiftPM `exclude`/`sources` honoured); otherwise the directory.
+    while IFS= read -r f; do [[ -f "$f" ]] || continue; n=$(wc -l < "$f" | tr -d ' '); (( n > 200 )) && { sz=1; findings+=("**$name** oversized: $f ($n lines > 200)"); }; done < <(
+      if [[ -n "$srclist" ]]; then cat "$srclist"; else find "$dir" -name '*.swift'; fi)
     while IFS= read -r td; do [[ -d "$td" ]] || continue
       while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "$td" -name '*.swift')
     done <<<"$tdirs"
@@ -455,8 +457,8 @@ check_component() { # name dir
   catch_out=$(empty_catches "$dir" "$srclist" 2>/dev/null); catch_status=$?
   # grep over the manifest's files (none when it is empty) or, without a manifest, over the directory.
   grep_sources() { # pattern
-    if [[ -n "$srclist" ]]; then [[ -s "$srclist" ]] && tr '\n' '\0' <"$srclist" | xargs -0 grep -HnE "$1" 2>/dev/null; true
-    else grep -HnE "$1" -r "$dir" --include='*.swift' 2>/dev/null; true; fi; }
+    if [[ -n "$srclist" ]]; then [[ -s "$srclist" ]] && tr '\n' '\0' <"$srclist" | xargs -0 grep -HnE "$1" -- 2>/dev/null; true
+    else grep -HnE "$1" -r --include='*.swift' -- "$dir" 2>/dev/null; true; fi; }
   local rgrep; rgrep=$(grep_sources 'try!|as!|@unchecked Sendable|arc4random|print\(')
   rhits=$( { printf '%s\n' "$rgrep" "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $(tr '\n' ' ' <<<"$rhits")")
