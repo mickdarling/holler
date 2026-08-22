@@ -33,10 +33,17 @@ swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log
 # `|` or `,`). path is relative to the package root; c99name is the Swift module identifier SwiftPM uses for the test
 # filter (Foo+BarTests → Foo_BarTests); deps associate a test target with the component it tests.
 US=$'\x1f'; RS=$'\x1e'
-pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys
+# Each target's compiled source files (honouring `exclude`/`sources`) go to $LOG/sources-<safe name>.list, one path per
+# line, so per-component scans cover exactly what the component compiles.
+pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json, os, re, sys
+log_dir = sys.argv[1]
 for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]):
     deps = "\x1e".join(t.get("target_dependencies", []))
-    print("\x1f".join([t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps]))' 2>/dev/null)
+    print("\x1f".join([t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps]))
+    base = t.get("path") or ("Tests/" + t["name"] if t.get("type") == "test" else "Sources/" + t["name"])
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", t["name"])
+    with open(os.path.join(log_dir, "sources-" + safe + ".list"), "w") as f:
+        f.write("".join(base.rstrip("/") + "/" + src + "\n" for src in t.get("sources", []) if src.endswith(".swift")))' "$LOG" 2>/dev/null)
 pkg_targets=$(cut -d"$US" -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 target_row() { awk -F"$US" -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_rows"; }  # literal name match
@@ -260,11 +267,18 @@ PYX
 }
 
 # Multiline-aware scan for swallowed errors: `catch {` ... `}` with only whitespace between (any line layout).
-empty_catches() { # dir
-  python3 - "$1" <<'PYX'
+empty_catches() { # dir [sources-list]: a catch whose body holds nothing but whitespace and comments
+  python3 - "$1" "${2:-}" <<'PYX'
 import re, sys, pathlib
-for f in pathlib.Path(sys.argv[1]).rglob("*.swift"):
-    text = f.read_text()
+def blank_comments(text):  # comments become spaces; newlines survive so reported line numbers stay right
+    def keep_lines(m): return re.sub(r"[^\n]", " ", m.group(0))
+    text = re.sub(r"/\*.*?\*/", keep_lines, text, flags=re.S)
+    return re.sub(r"//[^\n]*", keep_lines, text)
+listing = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
+files = [pathlib.Path(l) for l in listing.read_text().splitlines() if l] if listing and listing.exists() else sorted(pathlib.Path(sys.argv[1]).rglob("*.swift"))
+for f in files:
+    if not f.exists(): continue
+    text = blank_comments(f.read_text())
     for m in re.finditer(r"catch\b[^{]*\{\s*\}", text):
         print(f"{f}:{text.count(chr(10), 0, m.start()) + 1}: empty catch block")
 PYX
@@ -382,6 +396,8 @@ check_component() { # name dir
     findings+=("**$name** boundaries unverified: scripts/check-boundaries.sh only understands Sources/<Name>, Tests/<Name>Tests, Apps/<Name> (got $dir / $tdir)")
   elif [[ "$layer" == "unknown" ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker skips modules missing from the graph
     findings+=("**$name** boundaries unverified: not declared in docs/module-graph.yml (imports are not checked)")
+  elif [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # the checker's graph parser keys on [\w-]+ only
+    findings+=("**$name** boundaries unverified: scripts/check-boundaries.sh cannot parse this module name from the graph (only [A-Za-z0-9_-])")
   elif has_line_under "$dir" "$tdir" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
     findings+=("**$name** boundaries: $(lines_under "$dir" "$tdir" "$LOG/boundaries.log" | head -3 | tr '\n' ' ')")
   else bocell="✅"; fi
@@ -398,9 +414,15 @@ check_component() { # name dir
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
   local rhits ats_out ats_status catch_out catch_status
   ats_out=$(ats_enabled "$name" "$dir" 2>/dev/null); ats_status=$?
-  catch_out=$(empty_catches "$dir" 2>/dev/null); catch_status=$?
-  # The scan covers the declared production directory as a whole (a production target may live under any path).
-  rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null; printf '%s\n' "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
+  # A declared package target is scanned over exactly the files it compiles (SwiftPM `exclude`/`sources` honoured);
+  # anything else over its directory as a whole.
+  local srclist=""; is_pkg_target_at "$name" "$dir" && srclist="$LOG/sources-$(safe_name "$name").list"
+  [[ -n "$srclist" && -s "$srclist" ]] || srclist=""
+  catch_out=$(empty_catches "$dir" "$srclist" 2>/dev/null); catch_status=$?
+  local rgrep
+  if [[ -n "$srclist" ]]; then rgrep=$(tr '\n' '\0' <"$srclist" | xargs -0 grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' 2>/dev/null || true)
+  else rgrep=$(grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null || true); fi
+  rhits=$( { printf '%s\n' "$rgrep" "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $(tr '\n' ' ' <<<"$rhits")")
   elif (( ats_status != 0 || catch_status != 0 )); then rcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** risk grep unverified: helper exited (ats=$ats_status, catch=$catch_status)")
   else rcell="✅"; fi
