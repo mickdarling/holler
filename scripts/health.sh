@@ -20,7 +20,7 @@ if ! xcodebuild -version >/dev/null 2>&1 && [[ -d /Applications/Xcode.app ]]; th
   export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 fi
 NO_SIM=0; [[ "${1:-}" == "--no-sim" ]] && NO_SIM=1
-date_str=$(date +%F); commit=$(git rev-parse --short HEAD)
+date_str=$(date +%F); commit=$(git rev-parse --short HEAD); tree=$(git rev-parse --short "HEAD^{tree}")  # tree survives rebase/squash
 tooling="swift $(swift --version 2>&1 | head -1 | sed -E 's/.*Swift version ([0-9.]+).*/\1/'), swiftlint $(swiftlint version), periphery $(periphery version), xcodegen $(xcodegen --version | awk '{print $2}')"
 rows=(); findings=(); red=0; yellow=0; green=0
 mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
@@ -244,6 +244,8 @@ check_component() { # name dir
   fi
   # --- boundaries: production dir and the component's own test dir
   if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+  elif [[ "$dir" != Sources/* && "$dir" != Apps/* ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker scans Sources/, Tests/, Apps/ only
+    findings+=("**$name** boundaries unverified: $dir is outside the roots scripts/check-boundaries.sh scans (Sources/, Tests/, Apps/)")
   elif [[ "$layer" == "unknown" ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker skips modules missing from the graph
     findings+=("**$name** boundaries unverified: not declared in docs/module-graph.yml (imports are not checked)")
   elif grep -qE "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
@@ -295,7 +297,7 @@ bounds_note=$( (( bounds_checker_ok == 0 )) && echo "❓ checker did not complet
 cat <<MD
 # Component health — mickdarling/holler — $date_str
 
-Commit: \`$commit\`  Tooling: $tooling
+Commit: \`$commit\` (tree \`$tree\` — reproducible against any commit with this tree)  Tooling: $tooling
 Package build: $( (( build_all == 0 )) && echo "✅" || { grep -q "command not found" "$LOG/build.log" && echo "❓ (toolchain missing)" || echo "❌"; } )  Periphery: $periphery_note  Boundaries script: $bounds_note  Simulator lane: $sim_note
 Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not applicable · ❓ not run / tool or environment failed (unverified)
 
