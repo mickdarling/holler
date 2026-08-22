@@ -63,6 +63,7 @@ extension PushToTalkGatedControl {
     private func staleJoinAnswered(accepted: Bool) async {
         staleJoins -= 1
         guard accepted else { releaseLeaveWaitersIfSettled(); return }
+        if terminalLeave { await issueLeave(); return }  // the user/app/system ended the membership: do not adopt it
         if running || starting {
             if joinsOutstanding > 0 {
                 membershipSurvived = true
@@ -122,7 +123,13 @@ extension PushToTalkGatedControl {
             systemTransmitting = false  // capturing and holding the relay floor
             await inner.release()
         }
-        guard shouldRejoin else { return }
+        guard shouldRejoin else {  // a terminal leave: no rejoin, and a rejoin that is still unanswered is retired
+            if running { terminalLeave = true }
+            staleJoins += joinsOutstanding
+            joinsOutstanding = 0
+            rejoinAfterAnswer = false
+            return
+        }
         if running { await rejoin() } else if starting { rejoinAfterStart = true }  // startup still suspended: after it
     }
 

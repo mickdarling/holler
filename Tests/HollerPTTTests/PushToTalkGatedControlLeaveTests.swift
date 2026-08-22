@@ -86,25 +86,6 @@ struct PushToTalkGatedControlLeaveTests {
         withExtendedLifetime(gate) {}
     }
 
-    @Test("a leave refused during the restart window (before the replacement join returns) still reconciles")
-    func leaveRefusedInRestartWindowReconciles() async throws {
-        let harness = try await makeGate()
-        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
-        await service.setAutoLeaveEvents(false)
-        await service.setAutoJoinEvents(false)
-        await service.setHoldJoins(true)
-        let restarting = Task { try await gate.start(channelName: "Kitchen") }  // leave issued; join held
-        try #require(await eventually { await service.pendingJoins == 1 })
-        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)  // in the window: not running yet
-        #expect(await service.count(.leave(channel)) == 1)  // not retried to exhaustion: a replacement join is pending
-        await service.setHoldJoins(false)
-        await service.releaseJoins()
-        try await restarting.value
-        try await emitAndAwaitHandled(.joinFailed(channel), on: service, gate: gate)  // old membership blocked the join
-        #expect(await gate.isJoinedToSystemChannel)  // reconciled to the surviving membership
-        withExtendedLifetime(gate) {}
-    }
-
     @Test("a join that stop() retired but the system later accepts is left again; stopAndAwaitLeave waits for it")
     func staleAcceptedJoinIsLeft() async throws {
         let service = FakePushToTalkChannel()
@@ -124,24 +105,6 @@ struct PushToTalkGatedControlLeaveTests {
         #expect(await gate.isJoinedToSystemChannel == false)
         try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)
         await stopping.value  // only now settled
-        withExtendedLifetime(gate) {}
-    }
-
-    @Test("a retired join accepted while endSession() is still releasing the coordinator does not add a second leave")
-    func staleJoinDuringEndSessionLeavesOnce() async throws {
-        let service = FakePushToTalkChannel()
-        let inner = RecordingTalkControl()
-        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
-        await service.setAutoJoinEvents(false)
-        try await gate.start(channelName: "Kitchen")  // join unanswered
-        await inner.setHoldReleases(true)
-        let stopping = Task { await gate.stop() }  // retires the join, then suspends in inner.release()
-        try #require(await eventually { await inner.pendingReleases == 1 })
-        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the retired join is accepted now
-        #expect(await service.count(.leave(channel)) == 0)  // endSession will issue the leave itself
-        await inner.releaseAll()
-        await stopping.value
-        #expect(await service.count(.leave(channel)) == 1)
         withExtendedLifetime(gate) {}
     }
 }

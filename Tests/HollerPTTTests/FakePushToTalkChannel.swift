@@ -16,7 +16,7 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     private(set) var calls: [Call] = []
     private var autoJoinEvents = true
     private var autoLeaveEvents = true
-    private var leaveFailures = 0, beginFailures = 0, stopFailures = 0
+    private var leaveFailures = 0, beginFailures = 0, stopFailures = 0, joinCommandFailures = 0
     private var holdJoins = false
     private var joinWaiters: [CheckedContinuation<Void, Never>] = []
     private var prepareFailures = 0
@@ -36,6 +36,7 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     func join(_ channel: Channel) async throws {
         calls.append(.join(channel.id, channel.name))
         if holdJoins { await withCheckedContinuation { joinWaiters.append($0) } }
+        if joinCommandFailures > 0 { joinCommandFailures -= 1; throw Rejected() }  // the command cannot be issued
         if joinFailures > 0 { joinFailures -= 1; continuation.yield(.joinFailed(channel.id)); return }
         if autoJoinEvents { continuation.yield(.joined(channel.id)) }
     }
@@ -71,6 +72,7 @@ actor FakePushToTalkChannel: PushToTalkChannelControlling {
     var pendingJoins: Int { joinWaiters.count }
     func setPrepareFailures(_ count: Int) { prepareFailures = count }
     func setJoinFailures(_ count: Int) { joinFailures = count }
+    func setJoinCommandFailures(_ count: Int) { joinCommandFailures = count }
     func setSpeakerFailures(_ count: Int) { speakerFailures = count }
     func setHoldSpeakerCalls(_ hold: Bool) { holdSpeakerCalls = hold }
     func releaseSpeakerCalls() {

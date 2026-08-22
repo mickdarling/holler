@@ -36,6 +36,8 @@ public actor PushToTalkGatedControl: TalkControlling {
     var rejoinAfterAnswer = false
     /// A system drop arrived while start() was still suspended in its join: rejoin once startup completes.
     var rejoinAfterStart = false
+    /// The user/app/system ended the membership while running: a retired join accepted afterwards must be left again.
+    var terminalLeave = false
     var starting = false
     /// endSession() is between retiring the session and issuing its leave (it awaits the coordinator first).
     var endingSession = false
@@ -87,9 +89,16 @@ public actor PushToTalkGatedControl: TalkControlling {
         if pumps.isEmpty { startPumps() }  // before the first startup await: nothing from that window is replayed later
         if running { await endSession() }
         starting = true
+        terminalLeave = false
         defer { starting = false }
-        try await service.prepare()
-        try await issueJoin()
+        do {
+            try await service.prepare()
+            try await issueJoin()
+        } catch {
+            // The gate stays stopped; if the old membership survived a refused leave meanwhile, end it now.
+            if joined || membershipSurvived { joined = false; membershipSurvived = false; await issueLeave() }
+            throw error
+        }
         running = true
         if rejoinAfterStart { rejoinAfterStart = false; try? await issueJoin() }  // dropped during startup: join again
         refreshContinuation.yield()
@@ -114,6 +123,7 @@ public actor PushToTalkGatedControl: TalkControlling {
         rejoinAfterLeave = false
         rejoinAfterAnswer = false
         rejoinAfterStart = false
+        terminalLeave = false
         membershipSurvived = false
         systemTransmitting = false
         stopRequested = false
