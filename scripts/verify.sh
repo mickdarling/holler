@@ -31,15 +31,24 @@ deadcode()   { echo "== deadcode";   periphery scan --quiet --skip-build --index
 boundaries() { echo "== boundaries"; scripts/check-boundaries.sh; }
 size()       { echo "== size";       scripts/check-size.sh; }
 
-sim() {
-  echo "== simulators"
+sim() { # [scheme] — run one scheme only when given
+  local only="${1:-}"
+  echo "== simulators${only:+ ($only)}"
+  if [[ -n "$only" ]] && ! awk -F'|' -v want="$only" '$1 == want { found = 1 } END { exit found ? 0 : 1 }' scripts/app-schemes.txt; then
+    echo "unknown scheme '$only' (see scripts/app-schemes.txt)" >&2; return 2
+  fi
   xcodegen generate --quiet
   while IFS='|' read -r scheme platform prefix; do
     [[ -z "$scheme" || "$scheme" == \#* ]] && continue
+    [[ -n "$only" && "$scheme" != "$only" ]] && continue
     destination=$(scripts/resolve-destination.sh "$platform" "$prefix")
     echo "-- $scheme on $destination"
-    xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" \
-      CODE_SIGNING_ALLOWED=NO | (command -v xcbeautify >/dev/null && xcbeautify --quiet || cat)
+    # HOLLER_SIM_RAW_LOG: when set, the raw xcodebuild stream is also written there (scripts/health.sh classifies from it;
+    # xcbeautify --quiet drops the build/test outcome markers).
+    # xcodebuild prints the outcome markers (Testing cancelled…, ** TEST FAILED **) on stderr: merge it into the stream.
+    xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" CODE_SIGNING_ALLOWED=NO 2>&1 \
+      | { if [[ -n "${HOLLER_SIM_RAW_LOG:-}" ]]; then tee "$HOLLER_SIM_RAW_LOG"; else cat; fi; } \
+      | (command -v xcbeautify >/dev/null && xcbeautify --quiet || cat)
   done < scripts/app-schemes.txt
 }
 
@@ -53,7 +62,7 @@ case "$cmd" in
   deadcode) deadcode ;;
   boundaries) boundaries ;;
   size) size ;;
-  sim) sim ;;
+  sim) sim "${2:-}" ;;
   all) all ;;
-  *) echo "usage: scripts/verify.sh {tools|build|test|lint|deadcode|boundaries|size|sim|all}"; exit 2 ;;
+  *) echo "usage: scripts/verify.sh {tools|build|test|lint|deadcode|boundaries|size|sim [scheme]|all}"; exit 2 ;;
 esac
