@@ -185,6 +185,14 @@ scripts/check-boundaries.sh >"$LOG/boundaries.log" 2>&1; bounds_all=$?
 # Simulator lane per scheme so an early failure leaves later schemes "not run" (❓) rather than "failed".
 declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run / 3 environment failure
 SIM_ENV_RE='no available [A-Za-z]+ simulator matching|command not found|xcrun: error|Unable to find a destination|xcode-select: error'
+# Package-lane environment/tooling failures (not source errors): missing toolchain pieces, SDK/license problems.
+PKG_ENV_RE='command not found|xcrun: error|xcode-select: error|not agreed to the Xcode|license agreement|unable to lookup item|cannot be located|unable to find utility|No such SDK|error: toolchain|error: unable to load standard library|error: cannot load underlying module'
+pkg_env_failure() { grep -qE "$PKG_ENV_RE" "$LOG/build.log" 2>/dev/null; }
+pkg_env_excerpt() { grep -hE "$PKG_ENV_RE" "$LOG/build.log" 2>/dev/null | strip_ansi | head -1 | cut -c1-160; }
+pkg_build_note() {
+  if (( build_all == 0 )); then echo "✅"
+  elif pkg_env_failure; then echo "❓ (environment: $(pkg_env_excerpt))"
+  else echo "❌ ($(grep -m1 'error:' "$LOG/build.log" 2>/dev/null | strip_ansi | strip_root | cut -c1-160))"; fi; }
 # Environment failures: xcbeautify rewrites "xcrun: error:" etc., so look in the raw stream first, then the wrapper log.
 sim_env_failure() { grep -qE "$SIM_ENV_RE" "$(raw_log "$1")" 2>/dev/null || grep -qE "$SIM_ENV_RE" "$LOG/sim-$1.log" 2>/dev/null; }
 # Classification reads the RAW xcodebuild stream ($LOG/sim-<scheme>.raw.log, via HOLLER_SIM_RAW_LOG); the beautified log
@@ -424,8 +432,8 @@ check_component() { # name dir
   catch_out=$(empty_catches "$dir" "$srclist" 2>/dev/null); catch_status=$?
   # grep over the manifest's files (none when it is empty) or, without a manifest, over the directory.
   grep_sources() { # pattern
-    if [[ -n "$srclist" ]]; then [[ -s "$srclist" ]] && tr '\n' '\0' <"$srclist" | xargs -0 grep -nE "$1" 2>/dev/null; true
-    else grep -nE "$1" -r "$dir" --include='*.swift' 2>/dev/null; true; fi; }
+    if [[ -n "$srclist" ]]; then [[ -s "$srclist" ]] && tr '\n' '\0' <"$srclist" | xargs -0 grep -HnE "$1" 2>/dev/null; true
+    else grep -HnE "$1" -r "$dir" --include='*.swift' 2>/dev/null; true; fi; }
   local rgrep; rgrep=$(grep_sources 'try!|as!|@unchecked Sendable|arc4random|print\(')
   rhits=$( { printf '%s\n' "$rgrep" "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $(tr '\n' ' ' <<<"$rhits")")
@@ -463,7 +471,7 @@ cat <<MD
 # Component health — mickdarling/holler — $date_str
 
 Commit: \`$commit\` (tree \`$tree\` — reproducible against any commit with this tree)  Tooling: $tooling
-Package build: $( (( build_all == 0 )) && echo "✅" || { grep -q "command not found" "$LOG/build.log" && echo "❓ (toolchain missing)" || echo "❌"; } )  Periphery: $periphery_note  Boundaries script: $bounds_note  Simulator lane: $sim_note
+Package build: $(pkg_build_note)  Periphery: $periphery_note  Boundaries script: $bounds_note  Simulator lane: $sim_note
 Legend: ✅ passed · ❌ failed · ⚠️ warning · ⏭ skipped · — not applicable · ❓ not run / tool or environment failed (unverified)
 
 | Component | Layer | Build | Tests | Lint | Dead code | Boundaries | Size | Risk grep | DI | Status |
