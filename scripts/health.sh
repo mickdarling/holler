@@ -324,7 +324,8 @@ check_component() { # name dir
   fi
   # --- lint
   local lint_paths=("$dir") td; while IFS= read -r td; do [[ -d "$td" ]] && lint_paths+=("$td"); done <<<"$tdirs"
-  local lint_log="$LOG/lint-$(safe_name "$name").log" lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
+  local lint_log lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
+  lint_log="$LOG/lint-$(safe_name "$name").log"
   swiftlint lint --strict --quiet "${lint_paths[@]}" >"$lint_log" 2>&1; lint_status=$?
   if (( lint_status == 0 )); then lcell="✅"
   elif grep -qE "$lint_diag_re" "$lint_log"; then lcell="❌"; status="RED"
