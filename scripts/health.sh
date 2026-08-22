@@ -72,9 +72,32 @@ pkg_targets_known() { [[ -n "$pkg_targets" ]]; }  # empty = `swift package descr
 periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 # Periphery coverage: it indexes every package target except `exclude_targets` (Periphery 3.x has no include list; an
 # invalid key such as `targets` is ignored with a warning, surfaced in the header). An excluded component is unscanned.
+# Parsed structurally with PyYAML when available (anchors, aliases, merge keys, tags, every escape). Without it, a
+# line-oriented fallback handles the plain forms; a file using YAML features it cannot resolve yields
+# `__UNPARSEABLE__`, and every component's Dead code cell is then unverified rather than guessed.
 periphery_excluded=$(python3 - <<'PYX'
-import re, pathlib
+import re, os, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
+try:
+    if os.environ.get("HOLLER_HEALTH_NO_PYYAML"): raise ImportError  # test hook for the fallback parser
+    import yaml
+    data = yaml.safe_load(text) or {}
+    value = data.get("exclude_targets") if isinstance(data, dict) else None
+    if value is None: names = []
+    elif isinstance(value, list): names = [str(v) for v in value if v is not None]
+    else: names = [str(value)]
+    print("\n".join(n for n in names if n)); raise SystemExit
+except ImportError:
+    pass
+def outside_quotes(s):  # the text of s with quoted scalars blanked, for feature detection
+    out, q = [], None
+    for ch in s:
+        if q: q = None if ch == q else q; out.append(" ")
+        elif ch in "'\"": q = ch; out.append(" ")
+        else: out.append(ch)
+    return "".join(out)
+if re.search(r"(^|\s)[&*!]|<<\s*:", "\n".join(outside_quotes(l.split("#")[0]) for l in text.splitlines())):
+    print("__UNPARSEABLE__"); raise SystemExit   # anchors, aliases, tags, merge keys: not resolvable here
 def tokenize(s, sep=None, stop=None):
     # Walk s with YAML quoting rules: inside "…" a backslash escapes the next character; inside '…' a doubled ''
     # is a literal quote. Outside quotes: '#' starts a comment that runs to the end of that physical line, `sep`
@@ -149,7 +172,8 @@ print("\n".join(n for n in names if n))
 PYX
 )
 periphery_config_warning=$(grep -E "^warning: \.periphery\.yml" "$LOG/periphery.log" | head -1)
-is_periphery_scanned() { ! grep -qx -- "$1" <<<"$periphery_excluded"; }
+periphery_exclusions_unknown=0; grep -qx -- "__UNPARSEABLE__" <<<"$periphery_excluded" && periphery_exclusions_unknown=1
+is_periphery_scanned() { (( periphery_exclusions_unknown == 0 )) && ! grep -qx -- "$1" <<<"$periphery_excluded"; }
 scripts/check-boundaries.sh >"$LOG/boundaries.log" 2>&1; bounds_all=$?
 # Simulator lane per scheme so an early failure leaves later schemes "not run" (❓) rather than "failed".
 declare -a sim_schemes=() sim_results=()   # parallel arrays: scheme -> 0 ok / 1 failed / 2 not run / 3 environment failure
@@ -333,6 +357,7 @@ check_component() { # name dir
     fi
     if (( periphery_status != 0 )); then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
     elif ! is_periphery_scanned "$name"; then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
+      (( periphery_exclusions_unknown )) && findings+=("**$name** dead code unverified: .periphery.yml uses YAML features the fallback parser cannot resolve (install PyYAML)")
       findings+=("**$name** dead code unverified: target is in .periphery.yml exclude_targets")
     elif grep -qF -- "$ROOT/$dir/" "$LOG/periphery.log"; then dcell="⚠️"; [[ $status == GREEN ]] && status="YELLOW"
       findings+=("**$name** dead code: $(grep -F -- "$ROOT/$dir/" "$LOG/periphery.log" | head -3 | strip_root | tr '\n' ' ')")
