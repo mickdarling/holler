@@ -236,9 +236,14 @@ while IFS='|' read -r scheme _ _; do
   elif sim_env_failure "$scheme"; then sim_results+=(3)
   elif sim_build_failed "$(raw_log "$scheme")"; then sim_results+=(1)       # diagnostics present, even if the stream was cut
   elif ! sim_ran_xcodebuild "$(raw_log "$scheme")"; then sim_results+=(3)  # never reached xcodebuild
+  elif sim_raw_succeeded "$(raw_log "$scheme")"; then sim_results+=(2)    # xcodebuild proved success; the wrapper failed
+    echo "warning: $scheme: xcodebuild reported TEST SUCCEEDED but scripts/verify.sh exited non-zero (formatter/wrapper): unverified" >&2
   else sim_results+=(1); fi
 done < scripts/app-schemes.txt
 (( ${#sim_schemes[@]} == 0 )) && echo "warning: no schemes read from scripts/app-schemes.txt; app rows are unverified" >&2
+# The raw xcodebuild stream ends in TEST SUCCEEDED and carries no failure marker: xcodebuild itself passed, whatever
+# the wrapper (xcbeautify, verify.sh) did afterwards.
+sim_raw_succeeded() { [[ -f "$1" ]] && grep -q '\*\* TEST SUCCEEDED \*\*' "$1" && ! grep -qE '\*\* (TEST|BUILD) FAILED \*\*' "$1" && ! sim_build_failed "$1"; }
 sim_result_for() { local i; for i in "${!sim_schemes[@]}"; do [[ "${sim_schemes[$i]}" == "$1" ]] && { echo "${sim_results[$i]}"; return; }; done; echo 2; }
 # Shared app code compiles into every scheme, so its Build cell aggregates every scheme's BUILD outcome (not the
 # scheme's test outcome): any app/dependency build failure → ❌; any lane that did not prove a build (environment
@@ -462,8 +467,11 @@ while IFS="$US" read -r tname tpath ttype _; do  # name, path, type, c99name, de
   [[ -z "$tpath" ]] && tpath="Sources/$tname"
   check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
 done <<<"$pkg_target_rows"
-for dir in Sources/*/; do dir=${dir%/}; [[ -d "$dir" ]] || continue; grep -qx -- "$dir" <<<"$seen_dirs" || check_component "$(basename "$dir")" "$dir"; done  # -d: unmatched glob
-for dir in Apps/*/; do [[ -d "$dir" ]] || continue; name=$(basename "$dir"); grep -qx -- "Apps/$name" <<<"$seen_dirs" || check_component "$name" "Apps/$name"; done  # declared targets under Apps/ already have a row
+# A directory that is a declared target path, or an ancestor of one (the container of a nested custom path), is not a
+# stray component.
+claimed_dir() { grep -qx -- "$1" <<<"$seen_dirs" || awk -v d="$1/" 'index($0, d) == 1 { f = 1; exit } END { exit !f }' <<<"$seen_dirs"; }
+for dir in Sources/*/; do dir=${dir%/}; [[ -d "$dir" ]] || continue; claimed_dir "$dir" || check_component "$(basename "$dir")" "$dir"; done  # -d: unmatched glob
+for dir in Apps/*/; do [[ -d "$dir" ]] || continue; name=$(basename "$dir"); claimed_dir "Apps/$name" || check_component "$name" "Apps/$name"; done
 
 # Scheme-level test failures (app built, package suites failed on the simulator) are reported on the lane, not a row.
 lane_test_failures=0; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && ! sim_build_failed "$(raw_log "${sim_schemes[$i]}")" && lane_test_failures=$((lane_test_failures+1)); done
