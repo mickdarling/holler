@@ -23,7 +23,7 @@ final class AppRoot {
         // Restart: clear the fields before suspending (a re-entrant start must not see the old gate), then tear down.
         var previousGate = gate, previousServices = services
         gate = nil; services = nil; viewModel = nil
-        await previousGate?.stop()
+        await previousGate?.stopAndAwaitLeave()  // the next join must not race a membership that is still ending
         await previousServices?.stop()
         // released before a new adapter is built: one PTChannelManager at a time
         previousGate = nil; previousServices = nil

@@ -104,4 +104,52 @@ struct PushToTalkGatedControlStaleAnswerTests {
         #expect(await gate.isSystemTransmitting == false)
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a release whose stop command cannot be issued, or is refused, still frees the coordinator")
+    func releaseFailuresFreeTheCoordinator() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        try await emitAndAwaitHandled(.beginTransmittingRequested(channel), on: service, gate: gate)
+        await service.setStopFailures(1)
+        await gate.release()  // throws inside the service
+        #expect(await inner.recorded == ["press", "release"])
+        try await emitAndAwaitHandled(.beginTransmittingRequested(channel), on: service, gate: gate)
+        await gate.release()
+        try await emitAndAwaitHandled(.stopTransmitFailed(channel), on: service, gate: gate)  // refused asynchronously
+        #expect(await inner.recorded == ["press", "release", "press", "release"])
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("stopAndAwaitLeave returns when the leave is confirmed (or refused to exhaustion), with a bound")
+    func stopAndAwaitLeave() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoLeaveEvents(false)
+        let stopping = Task { await gate.stopAndAwaitLeave(timeout: .seconds(30)) }
+        try #require(await eventually { await service.count(.leave(channel)) == 1 })
+        service.emit(.left(channel, reason: .developerRequest))  // confirmation
+        await stopping.value  // returns promptly (not after 30 s)
+        let bounded = Task { await gate.stopAndAwaitLeave(timeout: .milliseconds(50)) }  // no member: returns at once
+        await bounded.value
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a refused leave followed by the restart's refused join reconciles to the surviving membership")
+    func leaveRefusedThenJoinRefusedReconciles() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoLeaveEvents(false)
+        await service.setAutoJoinEvents(false)
+        await service.setHoldJoins(true)
+        let restarting = Task { try await gate.start(channelName: "Kitchen") }  // leave (unanswered), join held
+        try #require(await eventually { await service.pendingJoins == 1 })
+        await service.setHoldJoins(false)
+        await service.releaseJoins()
+        try await restarting.value  // join issued, unanswered
+        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)  // old membership survives…
+        #expect(await gate.isJoinedToSystemChannel == false)  // …decided when the join is answered
+        try await emitAndAwaitHandled(.joinFailed(channel), on: service, gate: gate)
+        #expect(await gate.isJoinedToSystemChannel)  // reconciled: the system still holds our membership
+        withExtendedLifetime(gate) {}
+    }
 }

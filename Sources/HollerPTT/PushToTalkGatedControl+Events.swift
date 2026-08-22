@@ -36,8 +36,15 @@ extension PushToTalkGatedControl {
         joinsOutstanding -= 1
         guard joinsOutstanding == 0 else { return }
         joined = accepted
+        if !accepted, membershipSurvived {  // our leave was refused and now so was the new join: still a member
+            membershipSurvived = false
+            joined = true
+            refreshContinuation.yield()
+            return
+        }
         if accepted {
             rejoinAfterAnswer = false
+            membershipSurvived = false
             activeSpeaker = nil  // a fresh channel shows nobody
             pushedSpeaker = nil
             speakerEpoch += 1
@@ -53,6 +60,7 @@ extension PushToTalkGatedControl {
     /// Our own leave was confirmed: the membership it ends is already over.
     private func ownLeaveSettled() async {
         pendingLeaves -= 1
+        if pendingLeaves == 0 { releaseLeaveWaiters() }
         if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin() }
     }
 
@@ -61,11 +69,16 @@ extension PushToTalkGatedControl {
     private func ownLeaveRefused() async {
         pendingLeaves -= 1
         if !running {
-            if leaveAttempts < Self.maxLeaveAttempts { await issueLeave() }
+            if leaveAttempts < Self.maxLeaveAttempts {
+                await issueLeave()
+            } else if pendingLeaves == 0 {
+                releaseLeaveWaiters()  // exhausted: let a waiting stopAndAwaitLeave return
+            }
             return
         }
         if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin(); return }
-        if !joined && joinsOutstanding == 0 {  // nothing answered or pending: the system still holds our membership
+        if joinsOutstanding > 0 { membershipSurvived = true; return }  // decided when that join is answered
+        if !joined {  // nothing answered or pending: the system still holds our membership
             joined = true
             refreshContinuation.yield()
         }
@@ -106,7 +119,8 @@ extension PushToTalkGatedControl {
             await inner.release()  // the coordinator must not wait for a confirmation that will not come
             refreshContinuation.yield()
         case let .stopTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession:
-            stopRequested = false  // the system did not accept our stop; mirror() may ask again
+            stopRequested = false  // the system did not accept our stop; the next state/notice asks again…
+            await inner.release()  // …but the coordinator must not keep capture and the floor meanwhile
         default: break
         }
     }

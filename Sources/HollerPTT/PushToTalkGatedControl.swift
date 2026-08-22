@@ -41,6 +41,10 @@ public actor PushToTalkGatedControl: TalkControlling {
     static let maxLeaveAttempts = 3
     /// A join was refused while our own leave was still in flight: retry once the leave is confirmed.
     var rejoinAfterLeave = false
+    /// Our leave was refused while a restart's join was still unanswered: if that join is refused too, we are still a
+    /// member of the old channel and the gate reconciles to joined.
+    var membershipSurvived = false
+    private var leaveWaiters: [CheckedContinuation<Void, Never>] = []
     var systemTransmitting = false
     /// The membership (channelSession) a system transmission belongs to: end/failed callbacks from an earlier one are stale.
     var transmitSession = 0
@@ -91,6 +95,22 @@ public actor PushToTalkGatedControl: TalkControlling {
         await endSession()
     }
 
+    /// stop(), then wait (bounded) until the system has confirmed or refused every leave we issued — so a caller that
+    /// replaces this gate does not race its own next join against a membership that is still ending.
+    public func stopAndAwaitLeave(timeout: Duration = .seconds(3)) async {
+        await stop()
+        guard pendingLeaves > 0 else { return }
+        let timer = Task { try? await Task.sleep(for: timeout); self.releaseLeaveWaiters() }
+        await withCheckedContinuation { leaveWaiters.append($0) }
+        timer.cancel()
+    }
+
+    func releaseLeaveWaiters() {
+        let waiters = leaveWaiters
+        leaveWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
     func issueJoin() async throws {
         joinsOutstanding += 1
         do {
@@ -109,6 +129,7 @@ public actor PushToTalkGatedControl: TalkControlling {
         joinsOutstanding = 0
         rejoinAfterLeave = false
         rejoinAfterAnswer = false
+        membershipSurvived = false
         systemTransmitting = false
         stopRequested = false
         channelSession += 1
@@ -152,7 +173,12 @@ public actor PushToTalkGatedControl: TalkControlling {
     /// Always through the system: the coordinator's state is only observed asynchronously here, so it cannot be used
     /// to pre-empt the request. If the coordinator then denies the floor, its notice makes the gate stop the system.
     public func press() async { if joined { try? await service.requestBeginTransmitting(channelID) } }
-    public func release() async { if joined { try? await service.stopTransmitting(channelID) } }
+    /// If the stop command cannot even be issued, no end callback will come: free the coordinator ourselves (capture and
+    /// the relay floor must not outlive the press); the system transmission is retried by the next state/notice.
+    public func release() async {
+        guard joined else { return }
+        if (try? await service.stopTransmitting(channelID)) == nil, systemTransmitting { await inner.release() }
+    }
     public nonisolated func subscribeStates() -> AsyncStream<TalkMachine.State> { inner.subscribeStates() }
     public nonisolated func subscribeNotices() -> AsyncStream<TalkNotice> { inner.subscribeNotices() }
     public nonisolated func subscribeRoster() -> AsyncStream<[Participant]> { inner.subscribeRoster() }

@@ -112,15 +112,15 @@ struct PushToTalkGatedControlTests {
         withExtendedLifetime(gate) {}
     }
 
-    @Test("a refused begin request releases the coordinator; a refused stop does not")
-    func transmitFailuresReleaseOnlyOnBegin() async throws {
+    @Test("a refused begin or stop request releases the coordinator (it must not wait for a callback that won't come)")
+    func transmitFailuresReleaseTheCoordinator() async throws {
         let harness = try await makeGate()
         let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
         await gate.press()
         try await emitAndAwaitHandled(.beginTransmitFailed(channel), on: service, gate: gate)
         #expect(await inner.recorded == ["release"])
         try await emitAndAwaitHandled(.stopTransmitFailed(channel), on: service, gate: gate)
-        #expect(await inner.recorded == ["release"])
+        #expect(await inner.recorded == ["release", "release"])
         withExtendedLifetime(gate) {}
     }
 
