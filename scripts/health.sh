@@ -72,52 +72,57 @@ periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 # Periphery coverage: it indexes every package target except `exclude_targets` (Periphery 3.x has no include list; an
 # invalid key such as `targets` is ignored with a warning, surfaced in the header). An excluded component is unscanned.
 periphery_excluded=$(python3 - <<'PYX'
-import re, pathlib
+import re, json, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
-def scan(s, stop=None):
-    # Walk s tracking single/double quotes; a '#' outside quotes starts a comment (dropped); `stop` (a character
-    # outside quotes) ends the scan. Returns (text_before_stop, index_of_stop or -1).
-    out, q = [], None
-    for i, ch in enumerate(s):
-        if q:
-            out.append(ch)
-            if ch == q: q = None
-        elif ch in "'\"": q = ch; out.append(ch)
-        elif ch == "#": break
-        elif stop and ch == stop: return "".join(out), i
-        else: out.append(ch)
-    return "".join(out), -1
-def unquote(x):
-    x = x.strip()
-    return x[1:-1] if len(x) >= 2 and x[0] == x[-1] and x[0] in "'\"" else x
-def split_items(s):  # commas outside quotes separate flow items
-    items, cur, q = [], [], None
-    for ch in s:
-        if q:
+def tokenize(s, sep=None, stop=None):
+    # Walk s with YAML quoting rules: inside "…" a backslash escapes the next character; inside '…' a doubled ''
+    # is a literal quote. Outside quotes: '#' starts a comment (rest dropped), `sep` splits, `stop` ends the walk.
+    # Returns (parts, index_of_stop or -1); parts keep their quotes for unquote().
+    parts, cur, q, i = [], [], None, 0
+    while i < len(s):
+        ch = s[i]
+        if q == '"':
             cur.append(ch)
-            if ch == q: q = None
+            if ch == "\\" and i + 1 < len(s): cur.append(s[i + 1]); i += 2; continue
+            if ch == '"': q = None
+        elif q == "'":
+            cur.append(ch)
+            if ch == "'":
+                if i + 1 < len(s) and s[i + 1] == "'": cur.append("'"); i += 2; continue
+                q = None
         elif ch in "'\"": q = ch; cur.append(ch)
-        elif ch == ",": items.append("".join(cur)); cur = []
+        elif ch == "#": break
+        elif stop and ch == stop: parts.append("".join(cur)); return parts, i
+        elif sep and ch == sep: parts.append("".join(cur)); cur = []
         else: cur.append(ch)
-    items.append("".join(cur))
-    return [unquote(x) for x in items if x.strip()]
+        i += 1
+    parts.append("".join(cur)); return parts, -1
+def unquote(x):  # a quoted scalar decoded with its escape semantics; a plain scalar as written
+    x = x.strip()
+    if len(x) >= 2 and x[0] == x[-1] == "'": return x[1:-1].replace("''", "'")
+    if len(x) >= 2 and x[0] == x[-1] == '"':
+        try: return json.loads(x)   # \" \\ \/ \b \f \n \r \t \uXXXX — the YAML double-quoted escapes in common use
+        except ValueError: return x[1:-1]
+    return x
+def uncomment(s): return tokenize(s)[0][0]
+def split_items(s): return [unquote(x) for x in tokenize(s, sep=",")[0] if x.strip()]
 names, lines = [], text.splitlines()
 for i, line in enumerate(lines):
     m = re.match(r"^\s*exclude_targets:(.*)$", line)   # the root mapping may be uniformly indented
     if not m: continue
-    rest = scan(m.group(1))[0].strip()
-    if rest.startswith("["):                       # flow form: [A, "B#C"] — possibly spanning lines
+    rest = uncomment(m.group(1)).strip()
+    if rest.startswith("["):                       # flow form: [A, "B#C", 'it''s'] — possibly spanning lines
         buf, j = rest[1:], i + 1
-        inside, close = scan(buf, "]")
+        parts, close = tokenize(buf, sep=",", stop="]")
         while close < 0 and j < len(lines):
             buf += " " + lines[j]; j += 1
-            inside, close = scan(buf, "]")
-        names += split_items(inside)
+            parts, close = tokenize(buf, sep=",", stop="]")
+        names += [unquote(x) for x in parts if x.strip()]
     elif rest:                                     # a single scalar: exclude_targets: Foo
         names.append(unquote(rest))
     else:                                          # block form: "- A" / "- 'B'" lines that follow
         for follower in lines[i + 1:]:
-            body = scan(follower)[0]
+            body = uncomment(follower)
             if not body.strip(): continue          # blank or comment-only lines are part of the sequence
             b = re.match(r"^\s*-\s*(.*)$", body)   # indented or indentless sequence entry
             if not b: break
