@@ -74,23 +74,54 @@ periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 periphery_excluded=$(python3 - <<'PYX'
 import re, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
-names = []
-for i, line in enumerate(text.splitlines()):
-    m = re.match(r"^\s*exclude_targets:\s*(.*?)\s*(#.*)?$", line)   # the root mapping may be uniformly indented
+def scan(s, stop=None):
+    # Walk s tracking single/double quotes; a '#' outside quotes starts a comment (dropped); `stop` (a character
+    # outside quotes) ends the scan. Returns (text_before_stop, index_of_stop or -1).
+    out, q = [], None
+    for i, ch in enumerate(s):
+        if q:
+            out.append(ch)
+            if ch == q: q = None
+        elif ch in "'\"": q = ch; out.append(ch)
+        elif ch == "#": break
+        elif stop and ch == stop: return "".join(out), i
+        else: out.append(ch)
+    return "".join(out), -1
+def unquote(x):
+    x = x.strip()
+    return x[1:-1] if len(x) >= 2 and x[0] == x[-1] and x[0] in "'\"" else x
+def split_items(s):  # commas outside quotes separate flow items
+    items, cur, q = [], [], None
+    for ch in s:
+        if q:
+            cur.append(ch)
+            if ch == q: q = None
+        elif ch in "'\"": q = ch; cur.append(ch)
+        elif ch == ",": items.append("".join(cur)); cur = []
+        else: cur.append(ch)
+    items.append("".join(cur))
+    return [unquote(x) for x in items if x.strip()]
+names, lines = [], text.splitlines()
+for i, line in enumerate(lines):
+    m = re.match(r"^\s*exclude_targets:(.*)$", line)   # the root mapping may be uniformly indented
     if not m: continue
-    rest = m.group(1)
-    if rest.startswith("["):                       # flow form: exclude_targets: [A, "B"] — possibly spanning lines
-        buf, j, lines = rest, i + 1, text.splitlines()
-        while "]" not in buf and j < len(lines):
-            buf += " " + re.sub(r"#.*$", "", lines[j]).strip(); j += 1
-        inside = buf[1:buf.index("]")] if "]" in buf else buf[1:]
-        names += [x.strip().strip("'\"") for x in inside.split(",") if x.strip()]
+    rest = scan(m.group(1))[0].strip()
+    if rest.startswith("["):                       # flow form: [A, "B#C"] — possibly spanning lines
+        buf, j = rest[1:], i + 1
+        inside, close = scan(buf, "]")
+        while close < 0 and j < len(lines):
+            buf += " " + lines[j]; j += 1
+            inside, close = scan(buf, "]")
+        names += split_items(inside)
+    elif rest:                                     # a single scalar: exclude_targets: Foo
+        names.append(unquote(rest))
     else:                                          # block form: "- A" / "- 'B'" lines that follow
-        for follower in text.splitlines()[i + 1:]:
-            if re.match(r"^\s*(#.*)?$", follower): continue   # blank or comment-only lines are part of the sequence
-            b = re.match(r"^\s*-\s*(.+?)\s*(#.*)?$", follower)   # indented or indentless sequence entry
+        for follower in lines[i + 1:]:
+            body = scan(follower)[0]
+            if not body.strip(): continue          # blank or comment-only lines are part of the sequence
+            b = re.match(r"^\s*-\s*(.*)$", body)   # indented or indentless sequence entry
             if not b: break
-            names.append(b.group(1).strip().strip("'\""))
+            names.append(unquote(b.group(1)))
     break
 print("\n".join(n for n in names if n))
 PYX
@@ -187,8 +218,6 @@ empty_catches() { # dir
   python3 - "$1" <<'PYX'
 import re, sys, pathlib
 for f in pathlib.Path(sys.argv[1]).rglob("*.swift"):
-    if "Tests/" in str(f):
-        continue
     text = f.read_text()
     for m in re.finditer(r"catch\b[^{]*\{\s*\}", text):
         print(f"{f}:{text.count(chr(10), 0, m.start()) + 1}: empty catch block")
@@ -257,16 +286,17 @@ check_component() { # name dir
       tcell="✅"
       while IFS= read -r trow; do
         tname_=$(cut -d"$US" -f1 <<<"$trow"); tdir_=$(cut -d"$US" -f2 <<<"$trow"); tdir_=${tdir_:-Tests/$tname_}
+        local tlog; tlog="$LOG/test-$(printf '%s' "$tname_" | tr -c 'A-Za-z0-9._-' '_').log"  # filesystem-safe evidence name
         if has_error_under "$ROOT/$tdir_/" "$LOG/build.log"; then tc="❌"; status="RED"
           findings+=("**$name** test target $tname_ failed to compile: $(grep -F -- "$ROOT/$tdir_/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
         elif (( build_all != 0 )); then tc="❓"; [[ $status == GREEN ]] && status="YELLOW"
-        elif swift test --skip-build --filter "$(filter_for_test_row "$trow")" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$tname_.log" 2>&1; then
+        elif swift test --skip-build --filter "$(filter_for_test_row "$trow")" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$tlog" 2>&1; then
           # Exit 0 with zero executed tests (filter mismatch) is not a pass. Swift Testing: "Test run with N tests";
           # XCTest: "Executed N tests".
-          if grep -qE "Test run with [1-9][0-9]* tests?|Executed [1-9][0-9]* tests?" "$LOG/test-$tname_.log"; then tc="✅"
+          if grep -qE "Test run with [1-9][0-9]* tests?|Executed [1-9][0-9]* tests?" "$tlog"; then tc="✅"
           else tc="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** tests unverified: $tname_ exited 0 but executed no tests"); fi
         else tc="❌"; status="RED"
-          findings+=("**$name** tests failed ($tname_): $(grep -E '✘|error:' "$LOG/test-$tname_.log" | head -3 | tr '\n' ' ')")
+          findings+=("**$name** tests failed ($tname_): $(grep -E '✘|error:' "$tlog" | head -3 | tr '\n' ' ')")
         fi
         # worst of all the component's test targets: ❌ > ❓ > ✅
         if [[ "$tc" == "❌" || "$tcell" == "❌" ]]; then tcell="❌"; elif [[ "$tc" == "❓" ]]; then tcell="❓"; fi
@@ -316,7 +346,8 @@ check_component() { # name dir
   local rhits ats_out ats_status catch_out catch_status
   ats_out=$(ats_enabled "$name" "$dir" 2>/dev/null); ats_status=$?
   catch_out=$(empty_catches "$dir" 2>/dev/null); catch_status=$?
-  rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null | grep -v 'Tests/'; printf '%s\n' "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
+  # The scan covers the declared production directory as a whole (a production target may live under any path).
+  rhits=$( { grep -nE 'try!|as!|@unchecked Sendable|arc4random|print\(' -r "$dir" --include='*.swift' 2>/dev/null; printf '%s\n' "$ats_out" "$catch_out" | sed '/^$/d'; } | head -5)
   if [[ -n "$rhits" ]]; then rcell="❌"; status="RED"; findings+=("**$name** risk grep: $(tr '\n' ' ' <<<"$rhits")")
   elif (( ats_status != 0 || catch_status != 0 )); then rcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** risk grep unverified: helper exited (ats=$ats_status, catch=$catch_status)")
   else rcell="✅"; fi
@@ -326,7 +357,8 @@ check_component() { # name dir
   elif [[ -n "$dhits" ]]; then dicell="❌"; status="RED"; findings+=("**$name** DI: $(tr '\n' ' ' <<<"$dhits")")
   else dicell="✅"; fi
   case "$status" in RED) red=$((red+1));; YELLOW) yellow=$((yellow+1));; *) green=$((green+1));; esac
-  rows+=("| $name | $layer | $bcell | $tcell | $lcell | $dcell | $bocell | $szcell | $rcell | $dicell | $status |")
+  local mdname=${name//|/\\|}  # a pipe in a target name must not split the table cell
+  rows+=("| $mdname | $layer | $bcell | $tcell | $lcell | $dcell | $bocell | $szcell | $rcell | $dicell | $status |")
 }
 
 # Package rows come from the declared targets (any path), so a target outside Sources/ is not silently omitted;
