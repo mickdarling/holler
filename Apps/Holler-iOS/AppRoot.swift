@@ -19,7 +19,7 @@ final class AppRoot {
             let configuration = try SessionServices.loadConfiguration(displayName: displayName)
             let services = SessionServices(configuration: configuration)
             let adapter = PushToTalkChannelAdapter()
-            let gate = PushToTalkGatedControl(inner: services.coordinator, adapter: adapter, channel: configuration.channel.id)
+            let gate = PushToTalkGatedControl(inner: services.coordinator, service: adapter, channel: configuration.channel.id)
             try AudioSessionConfigurator().configureForPushToTalk()
             _ = await AudioSessionConfigurator().requestRecordPermission()
             try await gate.start(channelName: configuration.channel.name)
