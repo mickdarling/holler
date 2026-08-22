@@ -85,4 +85,23 @@ struct PushToTalkGatedControlLeaveTests {
         #expect(await gate.isJoinedToSystemChannel)
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a leave refused during the restart window (before the replacement join returns) still reconciles")
+    func leaveRefusedInRestartWindowReconciles() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setAutoLeaveEvents(false)
+        await service.setAutoJoinEvents(false)
+        await service.setHoldJoins(true)
+        let restarting = Task { try await gate.start(channelName: "Kitchen") }  // leave issued; join held
+        try #require(await eventually { await service.pendingJoins == 1 })
+        try await emitAndAwaitHandled(.leaveFailed(channel), on: service, gate: gate)  // in the window: not running yet
+        #expect(await service.count(.leave(channel)) == 1)  // not retried to exhaustion: a replacement join is pending
+        await service.setHoldJoins(false)
+        await service.releaseJoins()
+        try await restarting.value
+        try await emitAndAwaitHandled(.joinFailed(channel), on: service, gate: gate)  // old membership blocked the join
+        #expect(await gate.isJoinedToSystemChannel)  // reconciled to the surviving membership
+        withExtendedLifetime(gate) {}
+    }
 }

@@ -71,9 +71,10 @@ extension PushToTalkGatedControl {
         await leaveRefused()
     }
 
-    /// The system refused (or could not be asked) to end our membership: we are still a member.
+    /// The system refused (or could not be asked) to end our membership: we are still a member. During a restart the
+    /// gate is not `running` yet but `starting`, and the replacement join may already be outstanding: same rules as running.
     func leaveRefused() async {
-        if !running {
+        if !running && !starting {
             if leaveAttempts < Self.maxLeaveAttempts {
                 await issueLeave()
             } else if pendingLeaves == 0 {
