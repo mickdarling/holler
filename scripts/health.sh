@@ -45,16 +45,16 @@ is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || 
 # Every test target of component <name>, one row per line (empty when it has none). Each must depend on <name> (a
 # suite that cannot import the component does not test it): <name>Tests; any test target named <name>…
 # (FooIntegrationTests, FooSpecs); and any test target not claimed by another dependency's name (IntegrationSpecs
-# depending on Foo) — such a target counts for each of its unclaimed production dependencies. A *TestSupport library
-# is claimed only by an exact <name>Tests: every test target depends on it, so dependency alone would attach every suite.
+# depending on Foo) — such a target counts for each of its unclaimed production dependencies. A name claim goes to the
+# most specific dependency (FooBarTests depending on FooBar and Foo belongs to FooBar only). A *TestSupport library is
+# claimed only by an exact <name>Tests: every test target depends on it, so dependency alone would attach every suite.
 test_target_rows_for() { awk -F'|' -v n="$1" '$3 == "test" {
     if (index("," $5 ",", "," n ",") == 0) next
     if ($1 == n "Tests") { print; next }
     if (n ~ /TestSupport$/) next
-    if (index($1, n) == 1) { print; next }
-    split($5, d, ","); claimed = 0
-    for (i in d) if (d[i] != "" && d[i] != n && index($1, d[i]) == 1) claimed = 1
-    if (!claimed) print
+    split($5, d, ","); best = ""
+    for (i in d) if (d[i] != "" && index($1, d[i]) == 1 && length(d[i]) > length(best)) best = d[i]
+    if (best == n || best == "") print   # ours by the most specific name claim, or unclaimed by any dependency
   }' <<<"$pkg_target_rows"; }
 # Directories of those test targets (declared path, or Tests/<target>); Tests/<name>Tests when none is declared.
 test_dirs_for() { local rows; rows=$(test_target_rows_for "$1"); [[ -n "$rows" ]] || { echo "Tests/$1Tests"; return; }
@@ -86,7 +86,7 @@ for i, line in enumerate(text.splitlines()):
     else:                                          # block form: "- A" / "- 'B'" lines that follow
         for follower in text.splitlines()[i + 1:]:
             if re.match(r"^\s*(#.*)?$", follower): continue   # blank or comment-only lines are part of the sequence
-            b = re.match(r"^\s+-\s*(.+?)\s*(#.*)?$", follower)
+            b = re.match(r"^\s*-\s*(.+?)\s*(#.*)?$", follower)   # indented or indentless sequence entry
             if not b: break
             names.append(b.group(1).strip().strip("'\""))
     break
