@@ -33,6 +33,11 @@ pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'i
 for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
 pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
+# The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
+test_dir_for() { local row; row=$(grep -E "^$1Tests\|" <<<"$pkg_target_rows" | head -1); local path; path=$(cut -d'|' -f2 <<<"$row"); echo "${path:-Tests/$1Tests}"; }
+# Literal path-prefix match on a log (no regex: target paths may contain metacharacters).
+has_line_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1) { f = 1; exit } END { exit !f }' "$3"; }
+lines_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1)' "$3"; }
 pkg_targets_known() { [[ -n "$pkg_targets" ]]; }  # empty = `swift package describe` failed: say so, do not blame Package.swift
 periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 # Periphery coverage: it indexes every package target except `exclude_targets` (Periphery 3.x has no include list; an
@@ -162,6 +167,7 @@ check_component() { # name dir
   local name="$1" dir="$2" status="GREEN"
   local layer; layer=$(layer_of "$name"); layer=${layer:-unknown}
   local bcell tcell lcell dcell bocell szcell rcell dicell
+  local tdir; tdir=$(test_dir_for "$name")
   # --- build / tests: package targets from SwiftPM; app targets (Apps/*) from the simulator lane
   if [[ "$dir" == Apps/* ]]; then
     local sr; if [[ "$name" == "Shared" ]]; then
@@ -210,9 +216,9 @@ check_component() { # name dir
       findings+=("**$name** build errors: $(grep -F -- "$ROOT/$dir/" "$LOG/build.log" | grep "error:" | head -3 | strip_root | tr '\n' ' ')")
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
-    if [[ -d "Tests/${name}Tests" ]]; then
-      if has_error_under "$ROOT/Tests/${name}Tests/" "$LOG/build.log"; then tcell="❌"; status="RED"
-        findings+=("**$name** test target failed to compile: $(grep -F -- "$ROOT/Tests/${name}Tests/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
+    if [[ -d "$tdir" ]]; then
+      if has_error_under "$ROOT/$tdir/" "$LOG/build.log"; then tcell="❌"; status="RED"
+        findings+=("**$name** test target failed to compile: $(grep -F -- "$ROOT/$tdir/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
       elif swift test --skip-build --filter "^${name}Tests\." ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$name.log" 2>&1; then
         # Exit 0 with zero executed tests (target missing from Package.swift, filter mismatch) is not a pass.
@@ -223,7 +229,7 @@ check_component() { # name dir
         findings+=("**$name** tests failed: $(grep -E '✘|error:' "$LOG/test-$name.log" | head -3 | tr '\n' ' ')")
       fi
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
-    else tcell="⚠️ none"; findings+=("**$name** has no test target (Tests/${name}Tests)"); [[ $status == GREEN ]] && status="YELLOW"
+    else tcell="⚠️ none"; findings+=("**$name** has no test target ($tdir)"); [[ $status == GREEN ]] && status="YELLOW"
     fi
     if (( periphery_status != 0 )); then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
     elif ! is_periphery_scanned "$name"; then dcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
@@ -233,7 +239,7 @@ check_component() { # name dir
     else dcell="✅"; fi
   fi
   # --- lint
-  local lint_paths=("$dir"); [[ -d "Tests/${name}Tests" ]] && lint_paths+=("Tests/${name}Tests")
+  local lint_paths=("$dir"); [[ -d "$tdir" ]] && lint_paths+=("$tdir")
   local lint_log="$LOG/lint-$name.log" lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
   swiftlint lint --strict --quiet "${lint_paths[@]}" >"$lint_log" 2>&1; lint_status=$?
   if (( lint_status == 0 )); then lcell="✅"
@@ -248,15 +254,15 @@ check_component() { # name dir
     findings+=("**$name** boundaries unverified: $dir is outside the roots scripts/check-boundaries.sh scans (Sources/, Tests/, Apps/)")
   elif [[ "$layer" == "unknown" ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker skips modules missing from the graph
     findings+=("**$name** boundaries unverified: not declared in docs/module-graph.yml (imports are not checked)")
-  elif grep -qE "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
-    findings+=("**$name** boundaries: $(grep -E "^(${dir}|Tests/${name}Tests)/" "$LOG/boundaries.log" | head -3 | tr '\n' ' ')")
+  elif has_line_under "$dir" "$tdir" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
+    findings+=("**$name** boundaries: $(lines_under "$dir" "$tdir" "$LOG/boundaries.log" | head -3 | tr '\n' ' ')")
   else bocell="✅"; fi
   # --- size
   local sz=0 n
   if [[ ! -d "$dir" ]]; then szcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** size unverified: $dir is not a directory")
   else
     while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 200 )) && { sz=1; findings+=("**$name** oversized: $f ($n lines > 200)"); }; done < <(find "$dir" -name '*.swift')
-    if [[ -d "Tests/${name}Tests" ]]; then while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "Tests/${name}Tests" -name '*.swift'); fi
+    if [[ -d "$tdir" ]]; then while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "$tdir" -name '*.swift'); fi
     szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
   fi
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
