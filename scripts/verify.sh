@@ -43,8 +43,12 @@ sim() { # [scheme] — run one scheme only when given
     [[ -n "$only" && "$scheme" != "$only" ]] && continue
     destination=$(scripts/resolve-destination.sh "$platform" "$prefix")
     echo "-- $scheme on $destination"
-    xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" \
-      CODE_SIGNING_ALLOWED=NO | (command -v xcbeautify >/dev/null && xcbeautify --quiet || cat)
+    # HOLLER_SIM_RAW_LOG: when set, the raw xcodebuild stream is also written there (scripts/health.sh classifies from it;
+    # xcbeautify --quiet drops the build/test outcome markers).
+    # xcodebuild prints the outcome markers (Testing cancelled…, ** TEST FAILED **) on stderr: merge it into the stream.
+    xcodebuild test -project Holler.xcodeproj -scheme "$scheme" -destination "$destination" CODE_SIGNING_ALLOWED=NO 2>&1 \
+      | { if [[ -n "${HOLLER_SIM_RAW_LOG:-}" ]]; then tee "$HOLLER_SIM_RAW_LOG"; else cat; fi; } \
+      | (command -v xcbeautify >/dev/null && xcbeautify --quiet || cat)
   done < scripts/app-schemes.txt
 }
 
