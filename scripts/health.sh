@@ -73,7 +73,7 @@ periphery scan --quiet >"$LOG/periphery.log" 2>&1; periphery_status=$?
 # Periphery coverage: it indexes every package target except `exclude_targets` (Periphery 3.x has no include list; an
 # invalid key such as `targets` is ignored with a warning, surfaced in the header). An excluded component is unscanned.
 periphery_excluded=$(python3 - <<'PYX'
-import re, json, pathlib
+import re, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
 def tokenize(s, sep=None, stop=None):
     # Walk s with YAML quoting rules: inside "…" a backslash escapes the next character; inside '…' a doubled ''
@@ -101,12 +101,25 @@ def tokenize(s, sep=None, stop=None):
         else: cur.append(ch)
         i += 1
     parts.append("".join(cur)); return parts, -1
+YAML_ESC = {"0": "\0", "a": "\a", "b": "\b", "t": "\t", "\t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r",
+            "e": "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", "N": "\u0085", "_": "\u00a0", "L": "\u2028", "P": "\u2029"}
+def decode_double_quoted(inner):  # YAML 1.2 double-quoted escapes (\xXX, \uXXXX, \UXXXXXXXX included)
+    out, i = [], 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch != "\\" or i + 1 >= len(inner): out.append(ch); i += 1; continue
+        nxt = inner[i + 1]
+        width = {"x": 2, "u": 4, "U": 8}.get(nxt)
+        if width and i + 2 + width <= len(inner):
+            try: out.append(chr(int(inner[i + 2:i + 2 + width], 16))); i += 2 + width; continue
+            except ValueError: pass
+        if nxt in YAML_ESC: out.append(YAML_ESC[nxt]); i += 2; continue
+        out.append(ch); i += 1            # not an escape YAML defines: kept as written
+    return "".join(out)
 def unquote(x):  # a quoted scalar decoded with its escape semantics; a plain scalar as written
     x = x.strip()
     if len(x) >= 2 and x[0] == x[-1] == "'": return x[1:-1].replace("''", "'")
-    if len(x) >= 2 and x[0] == x[-1] == '"':
-        try: return json.loads(x)   # \" \\ \/ \b \f \n \r \t \uXXXX — the YAML double-quoted escapes in common use
-        except ValueError: return x[1:-1]
+    if len(x) >= 2 and x[0] == x[-1] == '"': return decode_double_quoted(x[1:-1])
     return x
 def uncomment(s): return tokenize(s)[0][0]
 def split_items(s): return [unquote(x) for x in tokenize(s, sep=",")[0] if x.strip()]
