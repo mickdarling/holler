@@ -30,7 +30,7 @@ swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log
 # Declared SwiftPM targets: a Sources/<name> directory that is not a target is never compiled, so its row is unverified.
 # name|path|type per declared target (path is relative to the package root; custom paths are honoured).
 pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys
-for t in json.load(sys.stdin)["targets"]: print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
+for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
 pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 pkg_targets_known() { [[ -n "$pkg_targets" ]]; }  # empty = `swift package describe` failed: say so, do not blame Package.swift
