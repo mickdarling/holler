@@ -39,6 +39,12 @@ final class SessionServices {
         await supervisor.start()
     }
 
+    /// Tear down: the supervisor stops reconnecting and the coordinator drops its transport pumps.
+    func stop() async {
+        await supervisor.stop()
+        await coordinator.detach()
+    }
+
     func makeViewModel(control: any TalkControlling) -> TalkViewModel {
         TalkViewModel(channelName: configuration.channel.name, control: control, health: supervisor.subscribeHealth())
     }
