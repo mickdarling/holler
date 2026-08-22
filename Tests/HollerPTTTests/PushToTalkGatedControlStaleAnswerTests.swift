@@ -56,8 +56,10 @@ struct PushToTalkGatedControlStaleAnswerTests {
         withExtendedLifetime(gate) {}
     }
 
-    @Test("join answers are matched to join requests: a late answer to an earlier join is ignored (both orders)")
+    @Test("join answers are matched to join requests across a restart (both orders)")
     func joinAnswersCorrelated() async throws {
+        // stale #1 refused, #2 accepted → joined. stale #1 accepted (the system made us a member of the same channel),
+        // #2 refused because of it → the gate reconciles to that surviving membership → joined as well.
         for staleFirst in [true, false] {
             let service = FakePushToTalkChannel()
             let inner = RecordingTalkControl()
@@ -68,8 +70,9 @@ struct PushToTalkGatedControlStaleAnswerTests {
             let first: PushToTalkEvent = staleFirst ? .joinFailed(channel) : .joined(channel)
             let second: PushToTalkEvent = staleFirst ? .joined(channel) : .joinFailed(channel)
             try await emitAndAwaitHandled(first, on: service, gate: gate)   // answer to #1 (stale)
+            #expect(await gate.isJoinedToSystemChannel == false, "undecided until #2 answers, staleFirst=\(staleFirst)")
             try await emitAndAwaitHandled(second, on: service, gate: gate)  // answer to #2 (current)
-            #expect(await gate.isJoinedToSystemChannel == staleFirst, "staleFirst=\(staleFirst)")
+            #expect(await gate.isJoinedToSystemChannel, "staleFirst=\(staleFirst)")
             withExtendedLifetime(gate) {}
         }
     }

@@ -104,4 +104,26 @@ struct PushToTalkGatedControlLeaveTests {
         #expect(await gate.isJoinedToSystemChannel)  // reconciled to the surviving membership
         withExtendedLifetime(gate) {}
     }
+
+    @Test("a join that stop() retired but the system later accepts is left again; stopAndAwaitLeave waits for it")
+    func staleAcceptedJoinIsLeft() async throws {
+        let service = FakePushToTalkChannel()
+        let inner = RecordingTalkControl()
+        let gate = PushToTalkGatedControl(inner: inner, service: service, channel: channel)
+        await service.setAutoJoinEvents(false)
+        await service.setAutoLeaveEvents(false)
+        try await gate.start(channelName: "Kitchen")  // join #1 unanswered
+        // leave #1 issued (we might be a member)
+        let stopping = Task { await gate.stopAndAwaitLeave(timeout: .seconds(30)) }
+        try #require(await eventually { await service.count(.leave(channel)) == 1 })
+        // leave #1 confirmed
+        try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)
+        // join #1 accepted late → member again
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)
+        try #require(await eventually { await service.count(.leave(channel)) == 2 })  // leave #2 issued
+        #expect(await gate.isJoinedToSystemChannel == false)
+        try await emitAndAwaitHandled(.left(channel, reason: .developerRequest), on: service, gate: gate)
+        await stopping.value  // only now settled
+        withExtendedLifetime(gate) {}
+    }
 }

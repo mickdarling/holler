@@ -32,7 +32,7 @@ extension PushToTalkGatedControl {
 
     /// Only the answer to our latest join counts; earlier joins' answers are stale (a newer request supersedes them).
     private func joinAnswered(accepted: Bool) async {
-        if staleJoins > 0 { staleJoins -= 1; return }  // belongs to a session that is over (answers arrive in order)
+        if staleJoins > 0 { await staleJoinAnswered(accepted: accepted); return }
         joinsOutstanding -= 1
         guard joinsOutstanding == 0 else { return }
         joined = accepted
@@ -57,10 +57,30 @@ extension PushToTalkGatedControl {
         }
     }
 
+    /// An answer to a join that stop() retired. Accepted while our leave is still in flight → nothing to do: the system
+    /// processes our commands in order (that join, then the leave). Accepted after the leave already settled → the
+    /// system made us a member again: leave once more, or during a restart count it as the surviving membership.
+    private func staleJoinAnswered(accepted: Bool) async {
+        staleJoins -= 1
+        guard accepted else { releaseLeaveWaitersIfSettled(); return }
+        if running || starting {
+            if joinsOutstanding > 0 {
+                membershipSurvived = true
+            } else if !joined {
+                joined = true
+                refreshContinuation.yield()
+            }
+        } else if pendingLeaves == 0 {
+            await issueLeave()
+        } else {
+            releaseLeaveWaitersIfSettled()
+        }
+    }
+
     /// Our own leave was confirmed: the membership it ends is already over.
     private func ownLeaveSettled() async {
         pendingLeaves -= 1
-        if pendingLeaves == 0 { releaseLeaveWaiters() }
+        releaseLeaveWaitersIfSettled()
         if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin() }
     }
 
@@ -77,8 +97,8 @@ extension PushToTalkGatedControl {
         if !running && !starting {
             if leaveAttempts < Self.maxLeaveAttempts {
                 await issueLeave()
-            } else if pendingLeaves == 0 {
-                releaseLeaveWaiters()  // exhausted: let a waiting stopAndAwaitLeave return
+            } else {
+                releaseLeaveWaitersIfSettled()  // exhausted: let a waiting stopAndAwaitLeave return
             }
             return
         }
@@ -139,54 +159,5 @@ extension PushToTalkGatedControl {
         guard running, !joined else { return }
         guard joinsOutstanding == 0 else { rejoinAfterAnswer = true; return }  // a join is unanswered: retry after it
         try? await issueJoin()  // a refusal arrives as .joinFailed; nothing retries until the next start/leave
-    }
-
-    /// The coordinator denied a press (someone else has the floor) while the system transmits for us: stop the system.
-    func handle(notice: TalkNotice) async {
-        guard case .denied = notice, systemTransmitting, joined, !stopRequested, transmitSession == channelSession
-        else { return }
-        await requestSystemStop()
-    }
-
-    /// Ask the system to stop our transmission once; if the command cannot even be issued, re-arm so the next state or
-    /// notice asks again (no `.stopTransmitFailed` callback will come for a command that was never sent).
-    private func requestSystemStop() async {
-        stopRequested = true
-        if (try? await service.stopTransmitting(channelID)) == nil { stopRequested = false }
-    }
-
-    /// Track the remote speaker; if the coordinator left the floor on its own (denied, disconnected) while the system
-    /// still transmits for us, stop the system transmission once (the system would keep showing us talking).
-    func mirror(_ state: TalkMachine.State) async {
-        defer { handledStateCount += 1 }
-        if case let .receiving(speaker) = state {
-            receivingFrom = speaker
-            pushedSpeaker = nil  // the coordinator is authoritative from here on
-        } else { receivingFrom = nil }
-        switch state {
-        case .transmitting, .requesting: break
-        case .idle, .receiving: if systemTransmitting && joined && !stopRequested { await requestSystemStop() }
-        }
-        refreshContinuation.yield()
-    }
-
-    func update(roster: [Participant]) {
-        self.roster = roster
-        refreshContinuation.yield()
-    }
-
-    /// Worker body: mirror the current speaker name into the system UI if it differs from what the system shows.
-    /// Deferred while the system transmits for us (the framework rejects it then); cached only after the service
-    /// accepted the update and membership did not end meanwhile, so a rejection or a leave is retried later.
-    func refreshActiveSpeaker() async {
-        defer { refreshCount += 1 }
-        guard running, joined, !systemTransmitting else { return }
-        let name = receivingFrom.map { speaker in roster.first { $0.id == speaker }?.displayName ?? speaker.rawValue }
-            ?? pushedSpeaker
-        guard name != activeSpeaker else { return }
-        let session = channelSession, epoch = speakerEpoch
-        let accepted = (try? await service.setActiveSpeaker(name, on: channelID)) != nil
-        // Cache only if nothing changed the system's view meanwhile (leave, stop, or a push-delivered speaker).
-        if accepted, joined, session == channelSession, epoch == speakerEpoch { activeSpeaker = name }
     }
 }
