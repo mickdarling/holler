@@ -81,6 +81,17 @@ struct PushToTalkGatedControlQuickTapTests {
         withExtendedLifetime(gate) {}
     }
 
+    @Test("a press during a live system transmission (begun by the system UI) issues no begin request")
+    func pressDuringSystemTransmissionIssuesNoBegin() async throws {
+        let harness = try await makeGate()
+        let (gate, service, inner) = (harness.gate, harness.service, harness.inner)
+        try await emitAndAwaitHandled(.beginTransmittingRequested(channel), on: service, gate: gate)  // system button
+        #expect(await inner.recorded.last == "press")
+        await gate.press()  // the app button too
+        #expect(await service.count(.begin(channel)) == 0)  // a duplicate would be refused, indistinguishably
+        withExtendedLifetime(gate) {}
+    }
+
     @Test("a failed begin clears a pending release: the next press is ordinary")
     func beginFailedClearsPendingRelease() async throws {
         let harness = try await makeGate()
