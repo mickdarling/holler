@@ -254,9 +254,10 @@ check_component() { # name dir
   fi
   # --- boundaries: production dir and the component's own test dir
   if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-  elif [[ "$dir" != Sources/* && "$dir" != Apps/* ]] || { [[ -d "$tdir" && "$tdir" != Tests/* ]]; }; then  # checker scans Sources/, Tests/, Apps/ only
+  elif [[ "$dir" != "Sources/$name" && "$dir" != "Apps/$name" ]] || { [[ -d "$tdir" && "$tdir" != "Tests/${name}Tests" ]]; }; then
+    # check-boundaries.sh keys modules by the first directory below Sources/, Tests/, Apps/ — only that layout is checked.
     bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-    findings+=("**$name** boundaries unverified: $dir / $tdir are not both under the roots scripts/check-boundaries.sh scans (Sources/, Tests/, Apps/)")
+    findings+=("**$name** boundaries unverified: scripts/check-boundaries.sh only understands Sources/<Name>, Tests/<Name>Tests, Apps/<Name> (got $dir / $tdir)")
   elif [[ "$layer" == "unknown" ]]; then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"  # checker skips modules missing from the graph
     findings+=("**$name** boundaries unverified: not declared in docs/module-graph.yml (imports are not checked)")
   elif has_line_under "$dir" "$tdir" "$LOG/boundaries.log"; then bocell="❌"; status="RED"
