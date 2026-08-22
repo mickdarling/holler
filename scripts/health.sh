@@ -112,7 +112,7 @@ def uncomment(s): return tokenize(s)[0][0]
 def split_items(s): return [unquote(x) for x in tokenize(s, sep=",")[0] if x.strip()]
 names, lines = [], text.splitlines()
 for i, line in enumerate(lines):
-    m = re.match(r"^\s*exclude_targets:(.*)$", line)   # the root mapping may be uniformly indented
+    m = re.match(r"^\s*(?:exclude_targets|\"exclude_targets\"|'exclude_targets')\s*:(.*)$", line)   # indented/quoted key
     if not m: continue
     rest = uncomment(m.group(1)).strip()
     if rest.startswith("["):                       # flow form: [A, "B#C", 'it''s'] — possibly spanning lines
