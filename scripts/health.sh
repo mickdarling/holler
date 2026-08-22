@@ -41,7 +41,7 @@ for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]):
     deps = "\x1e".join(t.get("target_dependencies", []))
     print("\x1f".join([t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"]), deps]))
     base = t.get("path") or ("Tests/" + t["name"] if t.get("type") == "test" else "Sources/" + t["name"])
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", t["name"])
+    safe = "".join(c if re.match(r"[A-Za-z0-9._-]", c) else "".join("%%%02X" % b for b in c.encode()) for c in t["name"])
     with open(os.path.join(log_dir, "sources-" + safe + ".list"), "w") as f:
         f.write("".join(base.rstrip("/") + "/" + src + "\n" for src in t.get("sources", []) if src.endswith(".swift")))' "$LOG" 2>/dev/null)
 pkg_targets=$(cut -d"$US" -f1 <<<"$pkg_target_rows")
@@ -284,8 +284,10 @@ for f in files:
 PYX
 }
 
-# A filesystem-safe form of a target name for evidence-log filenames (a name may contain `/` or other special characters).
-safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+# A filesystem-safe, collision-free form of a target name for evidence-log filenames: every character outside
+# [A-Za-z0-9._-] becomes %XX per UTF-8 byte (so `Foo/Bar` and `Foo|Bar` stay distinct). Same encoding as the describe step.
+safe_name() { python3 -c 'import re, sys
+print("".join(c if re.match(r"[A-Za-z0-9._-]", c) else "".join("%%%02X" % b for b in c.encode()) for c in sys.argv[1]), end="")' "$1"; }
 # The component's layer from the module graph: the key is matched literally (a name may contain regex metacharacters).
 layer_of() { awk -v n="$1" '/^ +[^ ]/ { l = $0; sub(/^ +/, "", l); if (index(l, n ":") == 1) { print; exit } }' docs/module-graph.yml | sed -E 's/.*layer: *([a-z]+).*/\1/'; }
 
