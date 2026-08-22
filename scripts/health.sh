@@ -74,7 +74,7 @@ import re, pathlib
 text = pathlib.Path(".periphery.yml").read_text() if pathlib.Path(".periphery.yml").exists() else ""
 names = []
 for i, line in enumerate(text.splitlines()):
-    m = re.match(r"^exclude_targets:\s*(.*?)\s*(#.*)?$", line)
+    m = re.match(r"^\s*exclude_targets:\s*(.*?)\s*(#.*)?$", line)   # the root mapping may be uniformly indented
     if not m: continue
     rest = m.group(1)
     if rest.startswith("["):                       # flow form: exclude_targets: [A, "B"] — possibly spanning lines
