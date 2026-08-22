@@ -28,9 +28,10 @@ mark() { [[ "$1" -eq 0 ]] && echo "✅" || echo "❌"; }
 # Whole-package passes once; per-component attribution by path. Tool failures are recorded, not swallowed.
 swift build --build-tests ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/build.log" 2>&1; build_all=$?
 # Declared SwiftPM targets: a Sources/<name> directory that is not a target is never compiled, so its row is unverified.
-# name|path|type per declared target (path is relative to the package root; custom paths are honoured).
+# name|path|type|c99name per declared target (path relative to the package root; c99name is the Swift module identifier
+# SwiftPM uses for the test filter, e.g. Foo+BarTests → Foo_BarTests).
 pkg_target_rows=$(swift package describe --type json 2>/dev/null | python3 -c 'import json,sys
-for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", "")))' 2>/dev/null)
+for t in sorted(json.load(sys.stdin)["targets"], key=lambda t: t["name"]): print("%s|%s|%s|%s" % (t["name"], t.get("path", ""), t.get("type", ""), t.get("c99name", t["name"])))' 2>/dev/null)
 pkg_targets=$(cut -d'|' -f1 <<<"$pkg_target_rows")
 is_pkg_target() { grep -qx -- "$1" <<<"$pkg_targets"; }
 target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_rows"; }  # literal name match
@@ -40,6 +41,9 @@ is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || 
   path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
 # The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
 test_dir_for() { local path; path=$(target_row "$1Tests" | cut -d'|' -f2); echo "${path:-Tests/$1Tests}"; }
+# ERE for `swift test --filter`: anchored on the test module's c99name with every regex metacharacter escaped.
+test_filter_for() { local c99; c99=$(target_row "$1Tests" | cut -d'|' -f4); c99=${c99:-$1Tests}
+  printf '^%s\\.' "$(printf '%s' "$c99" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"; }
 # Literal path-prefix match on a log (no regex: target paths may contain metacharacters).
 has_line_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1) { f = 1; exit } END { exit !f }' "$3"; }
 lines_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1)' "$3"; }
@@ -101,7 +105,7 @@ sim_build_failure_scope() { # raw-log [component-dir]
   local rel; rel=$(strip_root < "$1" | grep -E "^[^:]*\.swift:[0-9]+:[0-9]+: error:" || true)  # errors only; paths may contain spaces
   [[ -z "$rel" ]] && { echo unknown; return; }
   if grep -qE "^(Sources|Apps/Shared)/" <<<"$rel"; then echo app
-  elif [[ -n "${2:-}" ]] && grep -qE "^${2}/" <<<"$rel"; then echo app
+  elif [[ -n "${2:-}" ]] && awk -v p="${2%/}/" 'index($0, p) == 1 { f = 1; exit } END { exit !f }' <<<"$rel"; then echo app  # literal
   elif grep -qE "^Tests/" <<<"$rel"; then echo tests
   elif grep -qE "^Apps/" <<<"$rel"; then echo other-app
   else echo unknown; fi; }
@@ -225,7 +229,7 @@ check_component() { # name dir
       if has_error_under "$ROOT/$tdir/" "$LOG/build.log"; then tcell="❌"; status="RED"
         findings+=("**$name** test target failed to compile: $(grep -F -- "$ROOT/$tdir/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
       elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-      elif swift test --skip-build --filter "^${name}Tests\." ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$name.log" 2>&1; then
+      elif swift test --skip-build --filter "$(test_filter_for "$name")" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$name.log" 2>&1; then
         # Exit 0 with zero executed tests (target missing from Package.swift, filter mismatch) is not a pass.
         # Swift Testing prints "Test run with N tests"; XCTest prints "Executed N tests".
         if grep -qE "Test run with [1-9][0-9]* tests?|Executed [1-9][0-9]* tests?" "$LOG/test-$name.log"; then tcell="✅"
