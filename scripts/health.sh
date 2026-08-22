@@ -296,7 +296,7 @@ check_component() { # name dir
 # Package rows come from the declared targets (any path), so a target outside Sources/ is not silently omitted;
 # Sources/* directories that are not targets get a row too (rendered unverified) so stray code is visible.
 seen_dirs=""
-while IFS='|' read -r tname tpath ttype; do
+while IFS='|' read -r tname tpath ttype _; do  # name|path|type|c99name
   [[ -z "$tname" || "$ttype" == "test" ]] && continue
   [[ -z "$tpath" ]] && tpath="Sources/$tname"
   check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
