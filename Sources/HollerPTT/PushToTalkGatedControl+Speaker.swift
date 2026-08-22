@@ -1,4 +1,73 @@
-import HollerCore
+public import HollerCore
+
+extension PushToTalkGatedControl {
+    /// A leave we issued whose confirmation (`.left(.developerRequest)`) or refusal (`.leaveFailed`) is outstanding.
+    /// The system processes commands in order, so the leave ends whatever membership is live once every join issued
+    /// before it has been answered; its refusal means "still a member" only of such a live membership.
+    struct PendingLeave {
+        /// Identifies the entry its own issueLeave() appended, so the call finds it again after the command returns
+        /// even though answers handled during the await may have consumed entries ahead of it.
+        var id = 0
+        /// Joins issued before this leave and still unanswered: they are processed first and may create the very
+        /// membership this leave ends.
+        var joinsAhead: Int
+        /// No membership is live ahead of the remaining joins (none was confirmed when the leave was issued, or the
+        /// system reported the last one ended): if every join ahead is refused, the leave targets nothing.
+        var endedAhead: Bool
+        /// Its membership is over (the system reported a leave of it before answering this one): a refusal now means
+        /// nothing survived — nothing to reconcile to, nothing to retry.
+        var invalidated = false
+    }
+}
+
+/// Pending-leave bookkeeping (same actor).
+extension PushToTalkGatedControl {
+    /// Ask the system to leave; the confirmation (`.left(.developerRequest)`) or refusal (`.leaveFailed`) comes later.
+    /// A command that cannot even be issued is a refusal too (the membership is unchanged). `liveMembership`: the system
+    /// has confirmed a membership (or that one survived) — otherwise only the joins ahead can create one.
+    func issueLeave(liveMembership: Bool = true) async {
+        leaveAttempts += 1
+        nextLeaveID += 1
+        let id = nextLeaveID
+        // Before the call: its confirmation can be handled before the call returns.
+        pendingLeaveQueue.append(PendingLeave(id: id, joinsAhead: joinsOutstanding + staleJoins,
+                                              endedAhead: !liveMembership))
+        if (try? await service.leave(channelID)) == nil {
+            // Never sent: the system owes no answer. Take our entry as it stands now (joins answered during the await
+            // updated it); if an answer already consumed it, that answer settled it for us.
+            guard let idx = pendingLeaveQueue.firstIndex(where: { $0.id == id }) else {
+                releaseLeaveWaitersIfSettled()
+                return
+            }
+            await leaveRefused(pendingLeaveQueue.remove(at: idx))
+        }
+    }
+
+    /// The live membership is over: a pending leave with no join ahead targeted it (or an earlier one) and is void; one
+    /// with joins still ahead will only end a membership those joins create.
+    func liveMembershipOver() {
+        for idx in pendingLeaveQueue.indices {
+            if pendingLeaveQueue[idx].joinsAhead == 0 {
+                pendingLeaveQueue[idx].invalidated = true
+            } else {
+                pendingLeaveQueue[idx].endedAhead = true
+            }
+        }
+    }
+
+    /// A join answered: every pending leave issued after it has one join fewer ahead. Accepted → a membership is live
+    /// ahead of the leave's remaining joins; refused with none left and nothing live → the leave targets nothing.
+    func joinAheadAnswered(accepted: Bool) {
+        for idx in pendingLeaveQueue.indices where pendingLeaveQueue[idx].joinsAhead > 0 {
+            pendingLeaveQueue[idx].joinsAhead -= 1
+            if accepted {
+                pendingLeaveQueue[idx].endedAhead = false
+            } else if pendingLeaveQueue[idx].joinsAhead == 0 && pendingLeaveQueue[idx].endedAhead {
+                pendingLeaveQueue[idx].invalidated = true
+            }
+        }
+    }
+}
 
 /// Notices, coordinator-state mirroring, and the speaker-refresh worker for PushToTalkGatedControl (same actor).
 extension PushToTalkGatedControl {
@@ -74,9 +143,25 @@ extension PushToTalkGatedControl {
         joinsOutstanding += 1
         do {
             try await service.join(Channel(id: channelID, name: channelName))
-        } catch {
-            joinsOutstanding -= 1
+        } catch {  // never sent, no answer will come (one join in flight at most: callers hold the lifecycle lock)
+            if joinsOutstanding > 0 { joinsOutstanding -= 1 }
             throw error
         }
     }
+
+    // MARK: TalkControlling forwarding
+
+    public var currentRoster: [Participant] { roster }
+    /// Always through the system: the coordinator's state is only observed asynchronously here, so it cannot be used
+    /// to pre-empt the request. If the coordinator then denies the floor, its notice makes the gate stop the system.
+    public func press() async { if joined { try? await service.requestBeginTransmitting(channelID) } }
+    /// If the stop command cannot even be issued, no end callback will come: free the coordinator ourselves (capture and
+    /// the relay floor must not outlive the press); the system transmission is retried by the next state/notice.
+    public func release() async {
+        guard joined else { return }
+        if (try? await service.stopTransmitting(channelID)) == nil, systemTransmitting { await inner.release() }
+    }
+    public nonisolated func subscribeStates() -> AsyncStream<TalkMachine.State> { inner.subscribeStates() }
+    public nonisolated func subscribeNotices() -> AsyncStream<TalkNotice> { inner.subscribeNotices() }
+    public nonisolated func subscribeRoster() -> AsyncStream<[Participant]> { inner.subscribeRoster() }
 }

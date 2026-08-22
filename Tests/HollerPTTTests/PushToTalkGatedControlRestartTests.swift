@@ -44,16 +44,17 @@ struct PushToTalkGatedControlRestartTests {
         withExtendedLifetime(gate) {}
     }
 
-    @Test("a terminal leave retires an unanswered rejoin; a late acceptance of it is left again")
-    func terminalLeaveRetiresPendingRejoin() async throws {
+    @Test("a user leave reported while a rejoin is unanswered concerns the dropped membership: the rejoin stands")
+    func lateUserLeaveDoesNotRetirePendingRejoin() async throws {
         let harness = try await makeGate()
         let (gate, service, _) = (harness.gate, harness.service, harness.inner)
         await service.setAutoJoinEvents(false)
         try await emitAndAwaitHandled(.left(channel, reason: .unknown), on: service, gate: gate)  // rejoin, unanswered
-        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // user left
-        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the rejoin is accepted late
-        #expect(await gate.isJoinedToSystemChannel == false)  // not adopted…
-        #expect(await eventually { await service.count(.leave(channel)) == 1 })  // …left again
+        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // old one, late
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the rejoin is accepted
+        #expect(await gate.isJoinedToSystemChannel)  // adopted: a join is answered before any leave of it
+        #expect(await gate.terminalLeave == false)
+        #expect(await service.count(.leave(channel)) == 0)
         withExtendedLifetime(gate) {}
     }
 
@@ -95,21 +96,54 @@ struct PushToTalkGatedControlRestartTests {
         withExtendedLifetime(gate) {}
     }
 
-    @Test("a terminal leave during a restart's startup is honored: the startup join is retired and not adopted")
-    func terminalLeaveDuringStartup() async throws {
+    @Test("a user leave reported during a restart's unanswered startup join concerns the retired membership")
+    func lateUserLeaveDuringStartupJoin() async throws {
         let harness = try await makeGate()
         let (gate, service, _) = (harness.gate, harness.service, harness.inner)
         await service.setAutoJoinEvents(false)
         await service.setHoldJoins(true)
         let restarting = Task { try await gate.start(channelName: "Kitchen") }  // old leave confirmed; join held
         try #require(await eventually { await service.pendingJoins == 1 })
-        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // user left
+        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // old one, late
         await service.setHoldJoins(false)
         await service.releaseJoins()
         try await restarting.value
-        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the retired startup join accepted
+        try await emitAndAwaitHandled(.joined(channel), on: service, gate: gate)  // the startup join is accepted
+        #expect(await gate.isJoinedToSystemChannel)  // and adopted: the new session is not vetoed
+        #expect(await gate.terminalLeave == false)
+        #expect(await service.count(.leave(channel)) == 1)  // only the restart's own leave
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("a terminal leave of the retired membership while prepare() is suspended does not veto the new session")
+    func terminalLeaveDuringPrepare() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        await service.setHoldPrepares(true)
+        let restarting = Task { try await gate.start(channelName: "Kitchen") }  // old leave confirmed; prepare held
+        try #require(await eventually { await service.pendingPrepares == 1 })
+        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // old one, late
+        await service.setHoldPrepares(false)
+        await service.releasePrepares()
+        try await restarting.value
+        try #require(await eventually { await gate.isJoinedToSystemChannel })  // the new session joins as asked
+        #expect(await service.count(.join(channel, "Kitchen")) == 2)
+        try await emitAndAwaitHandled(.left(channel, reason: .unknown), on: service, gate: gate)  // and still rejoins
+        try #require(await eventually { await service.count(.join(channel, "Kitchen")) == 3 })
+        withExtendedLifetime(gate) {}
+    }
+
+    @Test("after a terminal leave a later system drop does not rejoin: the user's leave stands until the next start")
+    func terminalLeaveBlocksLaterRejoin() async throws {
+        let harness = try await makeGate()
+        let (gate, service, _) = (harness.gate, harness.service, harness.inner)
+        try await emitAndAwaitHandled(.left(channel, reason: .userRequest), on: service, gate: gate)  // user left
+        try await emitAndAwaitHandled(.left(channel, reason: .unknown), on: service, gate: gate)  // a stray drop
+        try await emitAndAwaitHandled(.joined(ChannelID("other")), on: service, gate: gate)  // drain
         #expect(await gate.isJoinedToSystemChannel == false)
-        #expect(await eventually { await service.count(.leave(channel)) == 2 })  // left again, not adopted
+        #expect(await service.count(.join(channel, "Kitchen")) == 1)  // no rejoin
+        try await gate.start(channelName: "Kitchen")  // an explicit start joins again
+        try #require(await eventually { await gate.isJoinedToSystemChannel })
         withExtendedLifetime(gate) {}
     }
 }

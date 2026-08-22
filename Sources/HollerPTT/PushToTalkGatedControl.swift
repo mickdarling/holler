@@ -36,16 +36,20 @@ public actor PushToTalkGatedControl: TalkControlling {
     var rejoinAfterAnswer = false
     /// A system drop arrived while start() was still suspended in its join: rejoin once startup completes.
     var rejoinAfterStart = false
-    /// The user/app/system ended the membership while running: a retired join accepted afterwards must be left again.
+    /// The user/system ended a membership this session held: no rejoin until the next start(), and a retired join
+    /// accepted afterwards is left again (bounded retries, never adopted).
     var terminalLeave = false
     var starting = false
     /// endSession() is between retiring the session and issuing its leave (it awaits the coordinator first).
     var endingSession = false
-    /// Leaves we issued whose `.left(.developerRequest)` confirmation is still outstanding.
-    var pendingLeaves = 0
-    /// How many times the current session end has asked the system to leave (a refused leave is retried, bounded).
+    /// Leaves we issued whose confirmation or refusal is outstanding, in issue order (the system answers in that order).
+    var pendingLeaveQueue: [PendingLeave] = []
+    var pendingLeaves: Int { pendingLeaveQueue.count }
+    /// How many times the current leave (session end, or a terminal cleanup leave) has been asked of the system: a refused
+    /// leave is retried, bounded.
     var leaveAttempts = 0
     static let maxLeaveAttempts = 3
+    var nextLeaveID = 0
     /// A join was refused while our own leave was still in flight: retry once the leave is confirmed.
     var rejoinAfterLeave = false
     /// Our leave was refused while a restart's join was still unanswered: if that join is refused too, we are still a
@@ -81,7 +85,9 @@ public actor PushToTalkGatedControl: TalkControlling {
     }
 
     /// Join the system channel; callbacks are accepted once `.joined` confirms. Calling this on a running gate
-    /// restarts the session (release, leave, join again). A failed start leaves the gate stopped.
+    /// restarts the session (release, leave, join again). A failed start leaves the gate stopped. If the user or the
+    /// system ends a membership this session holds, that is final: the gate stays running but not joined and does not
+    /// rejoin; the next start() joins again.
     public func start(channelName: String) async throws {
         await acquireLifecycle()
         defer { releaseLifecycle() }
@@ -89,20 +95,31 @@ public actor PushToTalkGatedControl: TalkControlling {
         if pumps.isEmpty { startPumps() }  // before the first startup await: nothing from that window is replayed later
         if running { await endSession() }
         starting = true
-        terminalLeave = false
         defer { starting = false }
         do {
             try await service.prepare()
-            try await issueJoin()
+            terminalLeave = false  // a terminal leave during prepare() ended a membership this start() replaces
+            // Already a member (the old membership survived a refused leave, or a retired join was accepted late, while
+            // prepare() was suspended): that membership is the session's; a second join for the same channel is not
+            // issued, so `joined` never coexists with an outstanding join.
+            if !joined { try await issueJoin() }
         } catch {
-            // The gate stays stopped; if the old membership survived a refused leave meanwhile, end it now.
-            if joined || membershipSurvived { joined = false; membershipSurvived = false; await issueLeave() }
+            // The gate stays stopped (`starting` cleared first: a refused cleanup leave is retried, never reconciled to
+            // joined); a membership that survived a refused leave is ended now. No rejoin latch can be armed here.
+            starting = false
+            terminalLeave = false
+            if joined || membershipSurvived {
+                joined = false
+                membershipSurvived = false
+                leaveAttempts = 0
+                await issueLeave()
+            }
             throw error
         }
         running = true
         if rejoinAfterStart {  // dropped during startup and not re-established since: join again
             rejoinAfterStart = false
-            if !joined && joinsOutstanding == 0 { try? await issueJoin() }
+            if !joined && joinsOutstanding == 0 && !terminalLeave { try? await issueJoin() }
         }
         refreshContinuation.yield()
     }
@@ -116,10 +133,12 @@ public actor PushToTalkGatedControl: TalkControlling {
     }
 
     func endSession() async {
-        let wasMember = joined || joinsOutstanding > 0
         endingSession = true
         defer { endingSession = false }
         running = false
+        // Whether a membership is live is carried in actor state across the coordinator release below: a `.left`
+        // handled meanwhile clears it, a retired join accepted meanwhile sets it. Decided only after the await.
+        membershipSurvived = joined || membershipSurvived
         joined = false
         staleJoins += joinsOutstanding  // answers to this session's joins must not re-arm the stopped gate
         joinsOutstanding = 0
@@ -127,7 +146,6 @@ public actor PushToTalkGatedControl: TalkControlling {
         rejoinAfterAnswer = false
         rejoinAfterStart = false
         terminalLeave = false
-        membershipSurvived = false
         systemTransmitting = false
         stopRequested = false
         channelSession += 1
@@ -135,20 +153,12 @@ public actor PushToTalkGatedControl: TalkControlling {
         pushedSpeaker = nil
         speakerEpoch += 1
         await inner.release()
-        guard wasMember else { return }
+        let live = membershipSurvived
+        membershipSurvived = false
+        guard live || staleJoins > 0 else { return }  // a retired join still unanswered may yet create a membership
         leaveAttempts = 0
-        await issueLeave()
-    }
-
-    /// Ask the system to leave; the confirmation (`.left(.developerRequest)`) or refusal (`.leaveFailed`) comes later.
-    /// A command that cannot even be issued is a refusal too (the membership is unchanged).
-    func issueLeave() async {
-        leaveAttempts += 1
-        pendingLeaves += 1  // before the call: its confirmation can be handled before the call returns
-        if (try? await service.leave(channelID)) == nil {
-            pendingLeaves -= 1
-            await leaveRefused()
-        }
+        endingSession = false  // the leave is being issued now: a retired join answered from here on is on its own
+        await issueLeave(liveMembership: live)
     }
 
     private func startPumps() {
@@ -170,18 +180,4 @@ public actor PushToTalkGatedControl: TalkControlling {
     func releaseLifecycle() {
         if lifecycleWaiters.isEmpty { lifecycleBusy = false } else { lifecycleWaiters.removeFirst().resume() }
     }
-
-    public var currentRoster: [Participant] { roster }
-    /// Always through the system: the coordinator's state is only observed asynchronously here, so it cannot be used
-    /// to pre-empt the request. If the coordinator then denies the floor, its notice makes the gate stop the system.
-    public func press() async { if joined { try? await service.requestBeginTransmitting(channelID) } }
-    /// If the stop command cannot even be issued, no end callback will come: free the coordinator ourselves (capture and
-    /// the relay floor must not outlive the press); the system transmission is retried by the next state/notice.
-    public func release() async {
-        guard joined else { return }
-        if (try? await service.stopTransmitting(channelID)) == nil, systemTransmitting { await inner.release() }
-    }
-    public nonisolated func subscribeStates() -> AsyncStream<TalkMachine.State> { inner.subscribeStates() }
-    public nonisolated func subscribeNotices() -> AsyncStream<TalkNotice> { inner.subscribeNotices() }
-    public nonisolated func subscribeRoster() -> AsyncStream<[Participant]> { inner.subscribeRoster() }
 }

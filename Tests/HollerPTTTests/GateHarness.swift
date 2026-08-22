@@ -37,12 +37,14 @@ func eventually(within timeout: Duration = .seconds(10), _ condition: () async -
     }
 }
 
-/// Emit an event and wait until the gate has dequeued and handled it (so a negative assertion afterwards is meaningful).
+/// Emit an event and wait until the gate has dequeued and handled it — and everything the fake put on the stream
+/// before it (a system answer to a command can still be queued when a test emits), so a negative assertion afterwards
+/// is meaningful.
 func emitAndAwaitHandled(_ event: PushToTalkEvent, on service: FakePushToTalkChannel,
                          gate: PushToTalkGatedControl) async throws {
-    let before = await gate.handledEventCount
     service.emit(event)
-    try #require(await eventually { await gate.handledEventCount > before })
+    let emitted = service.emittedCount
+    try #require(await eventually { await gate.handledEventCount >= emitted })
 }
 
 /// Push a talk state and wait until the gate's state pump has processed it.

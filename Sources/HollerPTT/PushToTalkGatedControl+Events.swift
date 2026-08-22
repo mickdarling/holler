@@ -20,11 +20,13 @@ extension PushToTalkGatedControl {
     private func handleMembership(_ event: PushToTalkEvent) async {
         switch event {
         case let .joined(id) where id == channelID && (joinsOutstanding > 0 || staleJoins > 0):
+            joinAheadAnswered(accepted: true)
             await joinAnswered(accepted: true)
         case let .joinFailed(id) where id == channelID && (joinsOutstanding > 0 || staleJoins > 0):
+            joinAheadAnswered(accepted: false)
             await joinAnswered(accepted: false)
         case let .left(id, .developerRequest) where id == channelID && pendingLeaves > 0: await ownLeaveSettled()
-        case let .left(id, reason) where id == channelID: await membershipEnded(rejoin: reason.shouldRejoin)
+        case let .left(id, reason) where id == channelID: await membershipEnded(reason)
         case let .leaveFailed(id) where id == channelID && pendingLeaves > 0: await ownLeaveRefused()
         default: break
         }
@@ -64,24 +66,42 @@ extension PushToTalkGatedControl {
     private func staleJoinAnswered(accepted: Bool) async {
         staleJoins -= 1
         guard accepted else { releaseLeaveWaitersIfSettled(); return }
-        if terminalLeave { await issueLeave(); return }  // the user/app/system ended the membership: do not adopt it
+        if terminalLeave { leaveAttempts = 0; await issueLeave(); return }  // user/app/system ended it: do not adopt
         if running || starting {
             if joinsOutstanding > 0 {
                 membershipSurvived = true
+            } else if pendingLeaves > 0 {
+                rejoinAfterLeave = true  // our own leave (issued after that join) ends it: join again once it confirms
             } else if !joined {
                 joined = true
                 refreshContinuation.yield()
             }
-        } else if pendingLeaves == 0 && !endingSession {  // endSession() has not issued its leave yet: it will
+        } else if endingSession {  // endSession() has not issued its leave yet: it will, for this membership
+            membershipSurvived = true
+        } else if pendingLeaves == 0 {
+            leaveAttempts = 0
             await issueLeave()
         } else {
             releaseLeaveWaitersIfSettled()
         }
     }
 
-    /// Our own leave was confirmed: the membership it ends is already over.
+    /// Our own leave was confirmed: the membership it ends is over, whatever latch said it survived, and the leaves
+    /// queued behind it learn that just as they do from any other end of the live membership.
     private func ownLeaveSettled() async {
-        pendingLeaves -= 1
+        pendingLeaveQueue.removeFirst()
+        membershipSurvived = false
+        if joined {  // a membership this session adopted from a refused earlier leave: our own later leave ended it
+            joined = false
+            stopRequested = false
+            channelSession += 1
+            activeSpeaker = nil
+            pushedSpeaker = nil
+            speakerEpoch += 1
+            if systemTransmitting { systemTransmitting = false; await inner.release() }
+            if running && !terminalLeave && joinsOutstanding == 0 { rejoinAfterLeave = true }  // join again below
+        }
+        liveMembershipOver()
         releaseLeaveWaitersIfSettled()
         if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin() }
     }
@@ -89,22 +109,32 @@ extension PushToTalkGatedControl {
     /// The system refused our leave: we are still a member. Stopped gate → retry the leave (bounded); running gate
     /// (a restart superseded that session) → the membership is ours again, or a refused join is retried.
     private func ownLeaveRefused() async {
-        pendingLeaves -= 1
-        await leaveRefused()
+        await leaveRefused(pendingLeaveQueue.removeFirst())
     }
 
     /// The system refused (or could not be asked) to end our membership: we are still a member. During a restart the
     /// gate is not `running` yet but `starting`, and the replacement join may already be outstanding: same rules as running.
-    func leaveRefused() async {
-        if !running && !starting {
+    /// After a terminal leave the membership is never adopted again: the cleanup leave is retried (bounded) instead.
+    func leaveRefused(_ request: PendingLeave) async {
+        if request.invalidated {  // that membership ended meanwhile: nothing survived, nothing to retry
+            releaseLeaveWaitersIfSettled()
+            if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin() }
+            return
+        }
+        if request.joinsAhead > 0 && request.endedAhead {  // (command never sent) nothing is live yet: the joins ahead
+            releaseLeaveWaitersIfSettled()  // decide — accepted → adopted or left again; refused → never a member
+            return
+        }
+        if terminalLeave || (!running && !starting) {
             if leaveAttempts < Self.maxLeaveAttempts {
                 await issueLeave()
             } else {
-                releaseLeaveWaitersIfSettled()  // exhausted: let a waiting stopAndAwaitLeave return
+                membershipSurvived = true  // exhausted: the system keeps us in; the next session end or join reconciles
+                releaseLeaveWaitersIfSettled()  // let a waiting stopAndAwaitLeave return
             }
             return
         }
-        if rejoinAfterLeave { rejoinAfterLeave = false; await rejoin(); return }
+        rejoinAfterLeave = false  // the leave was refused: that membership stands, there is nothing to join again
         if joinsOutstanding > 0 { membershipSurvived = true; return }  // decided when that join is answered
         if !joined {  // nothing answered or pending: the system still holds our membership
             joined = true
@@ -113,59 +143,44 @@ extension PushToTalkGatedControl {
     }
 
     /// The system ended our membership. Facts apply even while not running.
-    private func membershipEnded(rejoin shouldRejoin: Bool) async {
+    private func membershipEnded(_ reason: PushToTalkLeaveReason) async {
+        // Held: the system confirmed it (joined) and nothing newer was asked. The system answers a join before it can
+        // report leaving that membership, so a leave while a join is unanswered (a restart or rejoin in flight) concerns
+        // the membership being replaced: the standing request is not affected.
+        let held = joined && joinsOutstanding == 0  // joined implies no join outstanding; guarded regardless
         joined = false
+        membershipSurvived = false  // whatever membership survived a refused leave, it has ended now
+        liveMembershipOver()
         stopRequested = false
         channelSession += 1
+        let session = channelSession
         activeSpeaker = nil
         pushedSpeaker = nil
         speakerEpoch += 1
         if systemTransmitting {  // the system transmission ended with the membership: the coordinator must not keep
             systemTransmitting = false  // capturing and holding the relay floor
             await inner.release()
+            guard session == channelSession else { return }  // a stop()/start() ran meanwhile: it owns what follows
         }
-        guard shouldRejoin else {  // a terminal leave: no rejoin, and a join that is still unanswered is retired
-            if running || starting { terminalLeave = true }  // also cancels a startup in progress: its join is retired
-            rejoinAfterStart = false
-            staleJoins += joinsOutstanding
-            joinsOutstanding = 0
-            rejoinAfterAnswer = false
+        guard reason.shouldRejoin else {
+            // The user/system ending the held membership is final for the session: no rejoin until the next start(),
+            // and the latches that would join again are cleared.
+            if reason.isTerminal && held && (running || starting) {
+                terminalLeave = true
+                rejoinAfterLeave = false
+                rejoinAfterAnswer = false
+                rejoinAfterStart = false
+            }
             return
         }
+        if terminalLeave { return }  // the user/app/system ended this session's membership: no rejoin until start()
         if running { await rejoin() } else if starting { rejoinAfterStart = true }  // startup still suspended: after it
     }
-
-    private func handleTransmission(_ event: PushToTalkEvent) async {
-        switch event {
-        case let .beginTransmittingRequested(id) where id == channelID && joined:
-            let session = channelSession
-            systemTransmitting = true
-            transmitSession = session
-            stopRequested = false
-            await inner.press()
-            // the membership ended while the press was in flight
-            if session != channelSession { await inner.release() }
-        case let .endTransmittingRequested(id) where id == channelID && joined && transmitSession == channelSession:
-            systemTransmitting = false
-            stopRequested = false
-            await inner.release()
-            refreshContinuation.yield()  // speaker mirroring was deferred during the transmission
-        case let .beginTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession:
-            systemTransmitting = false
-            await inner.release()  // the coordinator must not wait for a confirmation that will not come
-            refreshContinuation.yield()
-        case let .stopTransmitFailed(id) where id == channelID && joined && transmitSession == channelSession:
-            stopRequested = false  // the system did not accept our stop; the next state/notice asks again…
-            await inner.release()  // …but the coordinator must not keep capture and the floor meanwhile
-        default: break
-        }
-    }
-
     /// One rejoin per system leave event. Under the lifecycle lock so it cannot straddle a stop()/start().
     func rejoin() async {
         await acquireLifecycle()
         defer { releaseLifecycle() }
-        guard running, !joined else { return }
+        guard running, !joined, !terminalLeave else { return }  // the user/app/system ended it: no rejoin this session
         guard joinsOutstanding == 0 else { rejoinAfterAnswer = true; return }  // a join is unanswered: retry after it
         try? await issueJoin()  // a refusal arrives as .joinFailed; nothing retries until the next start/leave
     }

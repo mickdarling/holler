@@ -35,11 +35,8 @@ struct PushToTalkGatedControlTests {
     func rejoinPolicy() async throws {
         let harness = try await makeGate()
         let (gate, service, _) = (harness.gate, harness.service, harness.inner)
-        for reason in [PushToTalkLeaveReason.userRequest, .developerRequest, .systemPolicy] {
-            try await emitAndAwaitHandled(.left(channel, reason: reason), on: service, gate: gate)
-        }
         try await emitAndAwaitHandled(.left(ChannelID("other"), reason: .unknown), on: service, gate: gate)
-        #expect(await service.count(.join(channel, "Kitchen")) == 1)  // none of those rejoin
+        #expect(await service.count(.join(channel, "Kitchen")) == 1)  // another channel's drop does not rejoin
         try await emitAndAwaitHandled(.left(channel, reason: .unknown), on: service, gate: gate)
         try #require(await eventually { await gate.isJoinedToSystemChannel })  // rejoined (fake confirms with .joined)
         try await emitAndAwaitHandled(.left(channel, reason: .unknown), on: service, gate: gate)

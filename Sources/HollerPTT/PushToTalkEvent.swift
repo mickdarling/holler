@@ -16,6 +16,15 @@ public enum PushToTalkLeaveReason: Sendable, Equatable {
         case .unknown: true
         }
     }
+
+    /// The user or the system ended the membership: final for the session (no later drop rejoins it). `.developerRequest`
+    /// is the app's own doing and is not final: a leave the app did not ask for (#35) is recovered by the next drop.
+    public var isTerminal: Bool {
+        switch self {
+        case .userRequest, .systemPolicy: true
+        case .unknown, .developerRequest: false
+        }
+    }
 }
 
 /// Thrown by a PushToTalkChannelControlling when a command cannot even be issued.
