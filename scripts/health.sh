@@ -43,14 +43,15 @@ target_row() { awk -F'|' -v n="$1" '$1 == n { print; exit }' <<<"$pkg_target_row
 is_pkg_target_at() { local row path; row=$(target_row "$1"); [[ -n "$row" ]] || return 1
   path=$(cut -d'|' -f2 <<<"$row"); [[ "${path:-Sources/$1}" == "${2%/}" ]]; }
 # The declared path of <Name>Tests (custom paths honoured); Tests/<Name>Tests when undeclared.
-# The test target for component <name>: <name>Tests if declared, else a test target named <name>… that depends on <name>
-# (e.g. FooSpecs for Foo). Dependency alone is not enough: every test target depends on the shared test-support library.
-test_target_row_for() { local row; row=$(target_row "$1Tests"); [[ -n "$row" ]] && { echo "$row"; return; }
-  awk -F'|' -v n="$1" '$3 == "test" && index($1, n) == 1 { split($5, d, ","); for (i in d) if (d[i] == n) { print; exit } }' <<<"$pkg_target_rows"; }
-test_dir_for() { local row path; row=$(test_target_row_for "$1"); path=$(cut -d'|' -f2 <<<"$row"); [[ -n "$row" && -z "$path" ]] && path="Tests/$(cut -d'|' -f1 <<<"$row")"
-  echo "${path:-Tests/$1Tests}"; }
-# ERE for `swift test --filter`: anchored on the test module's c99name with every regex metacharacter escaped.
-test_filter_for() { local c99; c99=$(test_target_row_for "$1" | cut -d'|' -f4); c99=${c99:-$1Tests}
+# Every test target of component <name>: <name>Tests plus any test target named <name>… that depends on <name>
+# (e.g. FooIntegrationTests, FooSpecs). Dependency alone is not enough: every test target depends on the shared
+# test-support library. One row per line; empty when the component has no declared test target.
+test_target_rows_for() { awk -F'|' -v n="$1" '$3 == "test" && ($1 == n "Tests" || (index($1, n) == 1 && index("," $5 ",", "," n ",") > 0))' <<<"$pkg_target_rows"; }
+# Directories of those test targets (declared path, or Tests/<target>); Tests/<name>Tests when none is declared.
+test_dirs_for() { local rows; rows=$(test_target_rows_for "$1"); [[ -n "$rows" ]] || { echo "Tests/$1Tests"; return; }
+  awk -F'|' '{ print ($2 != "" ? $2 : "Tests/" $1) }' <<<"$rows"; }
+# ERE for `swift test --filter` of one test target: anchored on its c99name with every regex metacharacter escaped.
+filter_for_test_row() { local c99; c99=$(cut -d'|' -f4 <<<"$1")
   printf '^%s\\.' "$(printf '%s' "$c99" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"; }
 # Literal path-prefix match on a log (no regex: target paths may contain metacharacters).
 has_line_under() { awk -v a="$1/" -v b="${2:-}/" 'index($0, a) == 1 || (b != "/" && index($0, b) == 1) { f = 1; exit } END { exit !f }' "$3"; }
@@ -184,7 +185,9 @@ check_component() { # name dir
   local name="$1" dir="$2" status="GREEN"
   local layer; layer=$(layer_of "$name"); layer=${layer:-unknown}
   local bcell tcell lcell dcell bocell szcell rcell dicell
-  local tdir; tdir=$(test_dir_for "$name")
+  local tdirs; tdirs=$(test_dirs_for "$name")  # one per line
+  local tdir; tdir=$(head -1 <<<"$tdirs")        # first (or the conventional default) — used for messages
+  local test_rows; test_rows=$(test_target_rows_for "$name")
   # --- build / tests: package targets from SwiftPM; app targets (Apps/*) from the simulator lane
   if [[ "$dir" == Apps/* ]]; then
     local sr; if [[ "$name" == "Shared" ]]; then
@@ -233,18 +236,25 @@ check_component() { # name dir
       findings+=("**$name** build errors: $(grep -F -- "$ROOT/$dir/" "$LOG/build.log" | grep "error:" | head -3 | strip_root | tr '\n' ' ')")
     elif (( build_all != 0 )); then bcell="❓"; status="YELLOW"; findings+=("**$name** build unverified: package build failed without a diagnostic attributable to this component")
     else bcell="✅"; fi
-    if [[ -d "$tdir" ]]; then
-      if has_error_under "$ROOT/$tdir/" "$LOG/build.log"; then tcell="❌"; status="RED"
-        findings+=("**$name** test target failed to compile: $(grep -F -- "$ROOT/$tdir/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
-      elif (( build_all != 0 )); then tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-      elif swift test --skip-build --filter "$(test_filter_for "$name")" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$name.log" 2>&1; then
-        # Exit 0 with zero executed tests (target missing from Package.swift, filter mismatch) is not a pass.
-        # Swift Testing prints "Test run with N tests"; XCTest prints "Executed N tests".
-        if grep -qE "Test run with [1-9][0-9]* tests?|Executed [1-9][0-9]* tests?" "$LOG/test-$name.log"; then tcell="✅"
-        else tcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** tests unverified: swift test exited 0 but executed no tests (filter ${name}Tests)"); fi
-      else tcell="❌"; status="RED"
-        findings+=("**$name** tests failed: $(grep -E '✘|error:' "$LOG/test-$name.log" | head -3 | tr '\n' ' ')")
-      fi
+    if [[ -n "$test_rows" ]]; then
+      local trow tname_ tdir_ tc
+      tcell="✅"
+      while IFS= read -r trow; do
+        tname_=$(cut -d'|' -f1 <<<"$trow"); tdir_=$(cut -d'|' -f2 <<<"$trow"); tdir_=${tdir_:-Tests/$tname_}
+        if has_error_under "$ROOT/$tdir_/" "$LOG/build.log"; then tc="❌"; status="RED"
+          findings+=("**$name** test target $tname_ failed to compile: $(grep -F -- "$ROOT/$tdir_/" "$LOG/build.log" | grep "error:" | head -2 | strip_root | tr '\n' ' ')")
+        elif (( build_all != 0 )); then tc="❓"; [[ $status == GREEN ]] && status="YELLOW"
+        elif swift test --skip-build --filter "$(filter_for_test_row "$trow")" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} >"$LOG/test-$tname_.log" 2>&1; then
+          # Exit 0 with zero executed tests (filter mismatch) is not a pass. Swift Testing: "Test run with N tests";
+          # XCTest: "Executed N tests".
+          if grep -qE "Test run with [1-9][0-9]* tests?|Executed [1-9][0-9]* tests?" "$LOG/test-$tname_.log"; then tc="✅"
+          else tc="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** tests unverified: $tname_ exited 0 but executed no tests"); fi
+        else tc="❌"; status="RED"
+          findings+=("**$name** tests failed ($tname_): $(grep -E '✘|error:' "$LOG/test-$tname_.log" | head -3 | tr '\n' ' ')")
+        fi
+        # worst of all the component's test targets: ❌ > ❓ > ✅
+        if [[ "$tc" == "❌" || "$tcell" == "❌" ]]; then tcell="❌"; elif [[ "$tc" == "❓" ]]; then tcell="❓"; fi
+      done <<<"$test_rows"
     elif [[ "$name" == *TestSupport ]]; then tcell="—"
     else tcell="⚠️ none"; findings+=("**$name** has no test target ($tdir)"); [[ $status == GREEN ]] && status="YELLOW"
     fi
@@ -256,7 +266,7 @@ check_component() { # name dir
     else dcell="✅"; fi
   fi
   # --- lint
-  local lint_paths=("$dir"); [[ -d "$tdir" ]] && lint_paths+=("$tdir")
+  local lint_paths=("$dir") td; while IFS= read -r td; do [[ -d "$td" ]] && lint_paths+=("$td"); done <<<"$tdirs"
   local lint_log="$LOG/lint-$name.log" lint_status lint_diag_re=':[0-9]+:[0-9]+: (error|warning):'
   swiftlint lint --strict --quiet "${lint_paths[@]}" >"$lint_log" 2>&1; lint_status=$?
   if (( lint_status == 0 )); then lcell="✅"
@@ -267,7 +277,7 @@ check_component() { # name dir
   fi
   # --- boundaries: production dir and the component's own test dir
   if (( bounds_checker_ok == 0 )); then bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
-  elif [[ "$dir" != "Sources/$name" && "$dir" != "Apps/$name" ]] || { [[ -d "$tdir" && "$tdir" != "Tests/${name}Tests" ]]; }; then
+  elif [[ "$dir" != "Sources/$name" && "$dir" != "Apps/$name" ]] || { [[ -d "$tdir" && "$tdir" != "Tests/${name}Tests" ]]; } || (( $(wc -l <<<"$tdirs") > 1 )); then
     # check-boundaries.sh keys modules by the first directory below Sources/, Tests/, Apps/ — only that layout is checked.
     bocell="❓"; [[ $status == GREEN ]] && status="YELLOW"
     findings+=("**$name** boundaries unverified: scripts/check-boundaries.sh only understands Sources/<Name>, Tests/<Name>Tests, Apps/<Name> (got $dir / $tdir)")
@@ -281,7 +291,9 @@ check_component() { # name dir
   if [[ ! -d "$dir" ]]; then szcell="❓"; [[ $status == GREEN ]] && status="YELLOW"; findings+=("**$name** size unverified: $dir is not a directory")
   else
     while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 200 )) && { sz=1; findings+=("**$name** oversized: $f ($n lines > 200)"); }; done < <(find "$dir" -name '*.swift')
-    if [[ -d "$tdir" ]]; then while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "$tdir" -name '*.swift'); fi
+    while IFS= read -r td; do [[ -d "$td" ]] || continue
+      while IFS= read -r f; do n=$(wc -l < "$f" | tr -d ' '); (( n > 300 )) && { sz=1; findings+=("**$name** oversized test: $f ($n lines > 300)"); }; done < <(find "$td" -name '*.swift')
+    done <<<"$tdirs"
     szcell=$([[ $sz -eq 0 ]] && echo ✅ || echo ⚠️); (( sz )) && [[ $status == GREEN ]] && status="YELLOW"
   fi
   # --- risk grep (CodeQL/Sonar precursors) in Swift, plus ATS exemptions in plists/entitlements/project.yml
@@ -309,8 +321,8 @@ while IFS='|' read -r tname tpath ttype _; do  # name|path|type|c99name|deps
   [[ -z "$tpath" ]] && tpath="Sources/$tname"
   check_component "$tname" "${tpath%/}"; seen_dirs+="${tpath%/}"$'\n'
 done <<<"$pkg_target_rows"
-for dir in Sources/*/; do dir=${dir%/}; grep -qx -- "$dir" <<<"$seen_dirs" || check_component "$(basename "$dir")" "$dir"; done
-for dir in Apps/*/; do name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
+for dir in Sources/*/; do dir=${dir%/}; [[ -d "$dir" ]] || continue; grep -qx -- "$dir" <<<"$seen_dirs" || check_component "$(basename "$dir")" "$dir"; done  # -d: unmatched glob
+for dir in Apps/*/; do [[ -d "$dir" ]] || continue; name=$(basename "$dir"); check_component "$name" "Apps/$name"; done
 
 # Scheme-level test failures (app built, package suites failed on the simulator) are reported on the lane, not a row.
 lane_test_failures=0; for i in "${!sim_results[@]}"; do [[ "${sim_results[$i]}" -eq 1 ]] && ! sim_build_failed "$(raw_log "${sim_schemes[$i]}")" && lane_test_failures=$((lane_test_failures+1)); done
