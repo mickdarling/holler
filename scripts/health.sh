@@ -368,7 +368,7 @@ check_component() { # name dir
   else rcell="✅"; fi
   # --- DI posture: .shared / static var outside adapters and apps
   local dhits; dhits=$(grep -nE '\.shared\b|static var ' -r "$dir" --include='*.swift' 2>/dev/null | head -5)
-  if [[ "$layer" == "adapter" ]] || (( is_app )); then dicell="—"  # adapters wrap Apple singletons; apps are composition roots
+  if [[ "$layer" == "adapter" || "$layer" == "app" ]] || (( is_app )); then dicell="—"  # adapters wrap Apple singletons; app-layer targets (Xcode apps and package targets in the app layer) are composition roots
   elif [[ -n "$dhits" ]]; then dicell="❌"; status="RED"; findings+=("**$name** DI: $(tr '\n' ' ' <<<"$dhits")")
   else dicell="✅"; fi
   case "$status" in RED) red=$((red+1));; YELLOW) yellow=$((yellow+1));; *) green=$((green+1));; esac
