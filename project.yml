@@ -46,6 +46,8 @@ targets:
         HollerRelayURL: $(HOLLER_RELAY_URL)
     entitlements:
       path: Apps/Holler-iOS/Holler.entitlements
+      properties:
+        com.apple.developer.push-to-talk: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.holler
