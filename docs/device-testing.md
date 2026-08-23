@@ -11,7 +11,7 @@ parts is in `docs/agent/development/HANDOFF_2026-08-22.md`.
    `xcodegen generate`.
 2. **Cloudflare.** `cd relay && npx wrangler login` (the relay deploys as a Worker named
    `holler-relay`).
-3. **Phones.** Two iPhones on iOS 16 or later. On each: Settings → Privacy & Security →
+3. **Phones.** Two iPhones on iOS 18 or later (the project's deployment target; the PTT framework itself is iOS 16+). On each: Settings → Privacy & Security →
    Developer Mode → on (reboots the phone). First install per phone needs USB.
 4. **Mac toolchain.** Xcode with the license accepted;
    `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (xcode-select points at the
