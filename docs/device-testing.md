@@ -47,16 +47,18 @@ Plug the phone in, trust the Mac on the phone, then:
 ```sh
 xcrun devicectl list devices                     # copy the device identifier
 xcodebuild -project Holler.xcodeproj -scheme Holler-iOS \
-  -destination 'generic/platform=iOS' -configuration Debug \
+  -destination "id=<identifier>" -configuration Debug \
+  -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
   -derivedDataPath .build/device build
 xcrun devicectl device install app --device <identifier> \
   .build/device/Build/Products/Debug-iphoneos/Holler.app
 ```
 
-The first build against a fresh team registers the device and the App ID (with the Push to Talk
-capability from `Apps/Holler-iOS/Holler.entitlements`) via automatic signing; if it stalls on
-"waiting for provisioning", open `Holler.xcodeproj` in Xcode once, select the Holler-iOS target →
-Signing & Capabilities, and let it resolve, then rerun the command. On the phone, the first launch
+`-allowProvisioningUpdates` lets the first build against a fresh team create the App ID (with the
+Push to Talk capability from `Apps/Holler-iOS/Holler.entitlements`) and profile;
+`-allowProvisioningDeviceRegistration` registers the destination phone — both need the Apple ID
+signed into Xcode. If it still stalls on provisioning, open `Holler.xcodeproj` in Xcode once,
+select the Holler-iOS target → Signing & Capabilities, let it resolve, then rerun the command. On the phone, the first launch
 asks to trust the developer certificate: Settings → General → VPN & Device Management.
 
 ## 3. The test
