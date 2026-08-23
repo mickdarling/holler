@@ -17,6 +17,9 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGN_STYLE: Automatic
+    # Apple team for device builds (10-char Team ID). Empty = simulator/CI only; set it once the
+    # individual Developer Program enrollment (2026-08-23) is approved, then `xcodegen generate`.
+    DEVELOPMENT_TEAM: ""
     # Relay base URL baked into Info.plist (HollerRelayURL). Override per build config or via xcconfig.
     HOLLER_RELAY_URL: "wss://relay.holler.invalid"
 packages:
