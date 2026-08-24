@@ -33,8 +33,8 @@ HOLLER_RELAY_URL: "wss://holler-relay.<subdomain>.workers.dev"
 
 then `xcodegen generate`. The app appends `/v0/channels/<channel>/ws` itself
 (`HollerConfiguration.channelSocketURL`). Every phone with the same build joins channel `home` by
-default (`ConfigurationLoader`; per-device channel choice is #10). Sanity check the deployed relay
-from the Mac:
+default (`ConfigurationLoader`; per-device channel choice is #10). Optional sanity check of the deployed relay from the Mac (`brew install websocat` — not in the
+Brewfile):
 
 ```sh
 websocat "wss://holler-relay.<subdomain>.workers.dev/v0/channels/home/ws"   # connects, stays open
@@ -51,7 +51,7 @@ xcodebuild -project Holler.xcodeproj -scheme Holler-iOS \
   -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
   -derivedDataPath .build/device build
 xcrun devicectl device install app --device <identifier> \
-  .build/device/Build/Products/Debug-iphoneos/Holler.app
+  .build/device/Build/Products/Debug-iphoneos/Holler-iOS.app
 ```
 
 `-allowProvisioningUpdates` lets the first build against a fresh team create the App ID (with the
